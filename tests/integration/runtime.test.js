@@ -7,6 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { createQuery, parseMessage } = require("../../src/dns/message");
+const { ConfigStore } = require("../../src/admin/config-store");
 const { createRuntime } = require("../../src/runtime");
 
 function fakeService(name, lifecycle) {
@@ -14,6 +15,36 @@ function fakeService(name, lifecycle) {
     async start() { lifecycle.push(`start:${name}`); },
     async close() { lifecycle.push(`close:${name}`); },
     address() { return { address: "127.0.0.1", port: 1000 }; },
+  };
+}
+
+function configurableTunnel() {
+  let token = "";
+  let tokenSource = "none";
+  let hasStoredToken = false;
+  let state = "stopped";
+  const calls = [];
+  const failingTokens = new Set();
+  return {
+    calls,
+    failingTokens,
+    status: () => ({ available: Boolean(token), tokenSource, hasStoredToken, state, logs: [] }),
+    configure(next) {
+      ({ token, tokenSource, hasStoredToken } = next);
+      calls.push({ action: "configure", token, tokenSource, hasStoredToken });
+    },
+    async start() {
+      calls.push({ action: "start", token });
+      if (failingTokens.has(token)) {
+        state = "error";
+        throw new Error(`token rejected: ${token}`);
+      }
+      state = "running";
+    },
+    async stop() {
+      calls.push({ action: "stop", token });
+      state = "stopped";
+    },
   };
 }
 
@@ -76,5 +107,80 @@ test("runtime keeps core services available when automatic Tunnel startup fails"
   assert.deepEqual(lifecycle, ["start:dns", "start:doh", "start:proxy", "start:admin"]);
   assert.equal(runtime.status().tunnel.state, "error");
   assert.match(runtime.events.list().at(-1).message, /download failed/);
+  await runtime.close();
+});
+
+test("runtime restarts Tunnel for a stored token and rolls back a rejected replacement", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const seed = new ConfigStore({ directory });
+  const initial = await seed.load();
+  initial.tunnel = { token: "old-config-token" };
+  await seed.update(initial);
+  const lifecycle = [];
+  const tunnel = configurableTunnel();
+  const serviceFactories = Object.fromEntries(
+    ["dns", "doh", "proxy", "admin"].map((name) => [name, () => fakeService(name, lifecycle)]),
+  );
+  const runtime = createRuntime({ directory, environment: {}, tunnel, output: () => {}, serviceFactories });
+  await runtime.start();
+  assert.equal(runtime.status().tunnel.tokenSource, "config");
+
+  tunnel.calls.length = 0;
+  await runtime.updateTunnelToken("new-config-token");
+  assert.deepEqual(tunnel.calls.map((call) => call.action), ["stop", "configure", "start"]);
+  assert.equal(runtime.config.get().tunnel.token, "new-config-token");
+  assert.equal(lifecycle.some((entry) => entry.startsWith("close:")), false);
+
+  tunnel.calls.length = 0;
+  tunnel.failingTokens.add("rejected-token");
+  await assert.rejects(runtime.updateTunnelToken("rejected-token"), /token rejected/i);
+  assert.equal(runtime.config.get().tunnel.token, "new-config-token");
+  assert.deepEqual(tunnel.calls.map((call) => call.action), ["stop", "configure", "start", "configure", "start"]);
+  assert.equal(runtime.status().tunnel.state, "running");
+  assert.equal(JSON.stringify(runtime.events.list()).includes("rejected-token"), false);
+
+  tunnel.calls.length = 0;
+  await runtime.clearTunnelToken();
+  assert.deepEqual(tunnel.calls.map((call) => call.action), ["stop", "configure"]);
+  assert.deepEqual(runtime.config.get().tunnel, { token: "" });
+  assert.equal(runtime.status().tunnel.available, false);
+  await runtime.close();
+});
+
+test("runtime keeps the environment token active while stored fallback changes", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const seed = new ConfigStore({ directory });
+  const initial = await seed.load();
+  initial.tunnel = { token: "stored-fallback" };
+  await seed.update(initial);
+  const lifecycle = [];
+  const tunnel = configurableTunnel();
+  const serviceFactories = Object.fromEntries(
+    ["dns", "doh", "proxy", "admin"].map((name) => [name, () => fakeService(name, lifecycle)]),
+  );
+  const runtime = createRuntime({
+    directory,
+    environment: { CLOUDFLARE_TUNNEL_TOKEN: "environment-token" },
+    tunnel,
+    output: () => {},
+    serviceFactories,
+  });
+  await runtime.start();
+  tunnel.calls.length = 0;
+
+  await runtime.updateTunnelToken("next-fallback");
+  assert.equal(runtime.config.get().tunnel.token, "next-fallback");
+  assert.equal(runtime.status().tunnel.tokenSource, "environment");
+  assert.equal(runtime.status().tunnel.hasStoredToken, true);
+  assert.deepEqual(tunnel.calls.map((call) => call.action), ["configure"]);
+
+  tunnel.calls.length = 0;
+  await runtime.clearTunnelToken();
+  assert.equal(runtime.status().tunnel.state, "running");
+  assert.equal(runtime.status().tunnel.tokenSource, "environment");
+  assert.equal(runtime.status().tunnel.hasStoredToken, false);
+  assert.deepEqual(tunnel.calls.map((call) => call.action), ["configure"]);
   await runtime.close();
 });
