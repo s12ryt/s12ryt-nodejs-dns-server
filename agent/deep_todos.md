@@ -13,4 +13,5 @@
 - [x] 依 TDD 完成單檔 bootstrap、下載校驗、快取及離線核心。
 - [x] 完成 43 項單元/整合測試、2 項 E2E、lint、build、audit 與打包驗證。
 - [x] 完成 README、AGPL-3.0-or-later 授權與 CI/Release workflow。
-- [ ] 建立公開 GitHub 倉庫、v0.1.0 Release，並由 Release `index.js` 驗證啟動。
+- [x] 建立公開 GitHub 倉庫與 v0.1.0 Release。
+- [x] 在全新暫存目錄僅放入 Release `index.js`，驗證其下載並校驗 runtime、建立有效 cache，且管理 API 回應 200。

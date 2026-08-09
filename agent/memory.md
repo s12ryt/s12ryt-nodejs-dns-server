@@ -16,3 +16,7 @@
 - 完成 esbuild 單檔 runtime 與 UI 資產內嵌；產生版本化 manifest。
 - 回歸結果：Node 單元/整合 43/43、Playwright 2/2、ESLint、build、npm audit、npm pack 與全專案 LSP 均通過。
 - 初始化本機 Git `main`，依功能與直接測試規劃原子提交；GitHub 倉庫與 Release 尚待建立。
+- 建立公開倉庫 `https://github.com/s12ryt/s12ryt-nodejs-dns-server`，推送原子提交至 `main`。
+- 建立 `v0.1.0` Release，資產包含 `index.js`、`runtime.cjs`、`manifest.json`；GitHub asset digest 與本機 build digest 相符。
+- 由全新暫存目錄只下載 Release `index.js` 冷啟動：初始目錄僅一檔，成功下載 runtime 0.1.0、驗證 SHA-256 `d57645836c934d53229d3ffa2e97f80f640ea67dee8ca1d2e074a99c94ca154a`、建立 active cache，管理 API 回應 HTTP 200。
+- 冷啟動第一次發現較早驗收遺留的孤立 `node index.js` 佔用 UDP/TCP 5354；確認父程序已消失且管理 API 不可達後終止該 PID，再完成驗收。
