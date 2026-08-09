@@ -64,14 +64,23 @@ function tunnelLabel(value) {
   return ({ running: "運行中", starting: "啟動中", stopping: "停止中", stopped: "已停止", error: "錯誤" })[value] || "不可使用";
 }
 
+function tunnelSourceLabel(value) {
+  return ({ environment: "Token 來源：環境變數", config: "Token 來源：設定檔" })[value] || "尚未設定 Token";
+}
+
 function renderTunnel() {
   const tunnel = state.tunnel;
   $("#tunnel-state").textContent = tunnelLabel(tunnel.state);
-  $("#tunnel-version").textContent = tunnel.available ? (tunnel.version || "等待下載 cloudflared") : "未設定環境 Token";
+  $("#tunnel-version").textContent = tunnel.available ? (tunnel.version || "等待下載 cloudflared") : "";
+  $("#tunnel-token-source").textContent = tunnelSourceLabel(tunnel.tokenSource);
+  $("#tunnel-token-note").textContent = tunnel.tokenSource === "environment"
+    ? (tunnel.hasStoredToken ? "設定檔備援已儲存" : "沒有設定檔備援")
+    : (tunnel.hasStoredToken ? "設定檔 Token 使用中" : "");
   $("#tunnel-logs").textContent = tunnel.logs?.join("\n") || tunnel.lastError || "尚無輸出";
   $("#tunnel-indicator").className = `large-indicator ${tunnel.state === "running" ? "online" : tunnel.state === "error" ? "danger" : ""}`;
   $("#tunnel-start").disabled = !tunnel.available || ["running", "starting"].includes(tunnel.state);
   $("#tunnel-stop").disabled = !["running", "starting"].includes(tunnel.state);
+  $("#tunnel-token-clear").disabled = !tunnel.hasStoredToken;
 }
 
 function renderEvents() {
@@ -199,6 +208,42 @@ async function tunnelAction(action) {
 
 $("#tunnel-start").addEventListener("click", () => tunnelAction("start"));
 $("#tunnel-stop").addEventListener("click", () => tunnelAction("stop"));
+$("#tunnel-token-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const token = $("#tunnel-token").value;
+  if (token.length === 0) {
+    showToast("Token 未變更");
+    return;
+  }
+  const button = $("#tunnel-token-save");
+  button.disabled = true;
+  try {
+    state.tunnel = await api("/api/tunnel/token", { method: "PUT", body: { token } });
+    form.reset();
+    renderTunnel();
+    showToast(state.tunnel.tokenSource === "environment" ? "備援 Token 已儲存" : "Tunnel Token 已套用");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+$("#tunnel-token-clear").addEventListener("click", async () => {
+  if (!state.tunnel.hasStoredToken || !confirm("確定清除已儲存的 Tunnel Token？")) return;
+  const button = $("#tunnel-token-clear");
+  button.disabled = true;
+  try {
+    state.tunnel = await api("/api/tunnel/token", { method: "DELETE" });
+    $("#tunnel-token-form").reset();
+    renderTunnel();
+    showToast("已清除儲存的 Tunnel Token");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    button.disabled = !state.tunnel.hasStoredToken;
+  }
+});
 $("#refresh-events").addEventListener("click", async () => { state.events = await api("/api/events"); renderEvents(); });
 $("#theme-toggle").addEventListener("click", () => {
   const current = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");

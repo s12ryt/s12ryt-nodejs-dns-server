@@ -21,11 +21,23 @@ test.beforeAll(async () => {
   for (const name of ["dns", "doh", "proxy", "admin"]) {
     current[name] = { ...current[name], host: "127.0.0.1", port: 0 };
   }
+  current.tunnel = { token: "initial-ui-token" };
   await config.update(current);
   let tunnelState = "stopped";
   let tunnelStarts = 0;
+  let effectiveToken = "";
+  let tokenSource = "none";
+  let hasStoredToken = false;
   const tunnel = {
-    status: () => ({ available: true, state: tunnelState, version: "test", lastError: null, logs: [] }),
+    status: () => ({
+      available: Boolean(effectiveToken), tokenSource, hasStoredToken,
+      state: tunnelState, version: "test", lastError: null, logs: [],
+    }),
+    configure(next) {
+      effectiveToken = next.token;
+      tokenSource = next.tokenSource;
+      hasStoredToken = next.hasStoredToken;
+    },
     start: async () => {
       tunnelStarts += 1;
       if (tunnelStarts === 1) {
@@ -74,8 +86,23 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByText("app.test", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Cloudflare Tunnel" }).click();
+    await expect(page.getByText("Token 來源：設定檔", { exact: true })).toBeVisible();
+    await page.getByLabel("Cloudflare Tunnel token").fill("ui-config-token");
+    await page.getByRole("button", { name: "儲存 Token", exact: true }).click();
+    await expect(page.getByLabel("Cloudflare Tunnel token")).toHaveValue("");
     await page.getByRole("button", { name: "啟動 Tunnel" }).click();
     await expect(page.getByText("運行中", { exact: true })).toBeVisible();
+
+    await page.getByLabel("Cloudflare Tunnel token").fill("ui-replacement-token");
+    await page.getByRole("button", { name: "儲存 Token", exact: true }).click();
+    await expect(page.getByText("運行中", { exact: true })).toBeVisible();
+    expect(runtime.config.get().tunnel.token).toBe("ui-replacement-token");
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "清除已儲存 Token" }).click();
+    await expect(page.getByText("尚未設定 Token", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "啟動 Tunnel" })).toBeDisabled();
+    expect(runtime.config.get().tunnel.token).toBe("");
 
     await page.getByRole("button", { name: "切換主題" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", /light|dark/);

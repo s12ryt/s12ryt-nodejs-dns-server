@@ -84,8 +84,28 @@
       </section>
 
       <section id="view-tunnel" class="view" hidden>
-        <div class="section-heading"><div><p class="eyebrow">PUBLIC EDGE</p><h2>Cloudflare Tunnel</h2><p class="muted">Token 僅由伺服器環境讀取。</p></div></div>
-        <div class="tunnel-layout"><section class="panel tunnel-state"><span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p><div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div></section><section class="panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section></div>
+        <div class="section-heading"><div><p class="eyebrow">PUBLIC EDGE</p><h2>Cloudflare Tunnel</h2></div></div>
+        <div class="tunnel-layout">
+          <section class="panel tunnel-state">
+            <span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p>
+            <div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div>
+          </section>
+          <section class="panel tunnel-token-panel" aria-labelledby="tunnel-token-title">
+            <p class="eyebrow">CREDENTIAL</p><h3 id="tunnel-token-title">Token 設定</h3>
+            <strong id="tunnel-token-source" class="credential-status">尚未設定 Token</strong>
+            <p id="tunnel-token-note" class="muted"></p>
+            <form id="tunnel-token-form" class="tunnel-token-form">
+              <label>Cloudflare Tunnel token
+                <input id="tunnel-token" name="token" type="password" autocomplete="new-password" spellcheck="false">
+              </label>
+              <div class="button-row">
+                <button id="tunnel-token-save" class="primary" type="submit">儲存 Token</button>
+                <button id="tunnel-token-clear" class="secondary" type="button">清除已儲存 Token</button>
+              </div>
+            </form>
+          </section>
+          <section class="panel tunnel-logs-panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section>
+        </div>
       </section>
 
       <section id="view-events" class="view" hidden>
