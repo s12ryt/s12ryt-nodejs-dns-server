@@ -24,7 +24,21 @@ class FakeChild extends EventEmitter {
 test("TunnelManager reports unavailable without a token", async () => {
   const manager = new TunnelManager({ token: "" });
   assert.equal(manager.status().available, false);
+  assert.equal(manager.status().tokenSource, "none");
   await assert.rejects(manager.start(), /token/i);
+});
+
+test("TunnelManager can replace an inactive token without exposing either secret", () => {
+  const manager = new TunnelManager({ token: "old-secret", tokenSource: "config", hasStoredToken: true });
+
+  manager.configure({ token: "new-secret", tokenSource: "environment", hasStoredToken: true });
+
+  const status = manager.status();
+  assert.equal(status.available, true);
+  assert.equal(status.tokenSource, "environment");
+  assert.equal(status.hasStoredToken, true);
+  assert.equal(JSON.stringify(status).includes("old-secret"), false);
+  assert.equal(JSON.stringify(status).includes("new-secret"), false);
 });
 
 test("TunnelManager starts with an environment token, captures bounded logs, and stops", async () => {
@@ -32,6 +46,7 @@ test("TunnelManager starts with an environment token, captures bounded logs, and
   let invocation;
   const manager = new TunnelManager({
     token: "secret-token-value",
+    tokenSource: "environment",
     ensureBinary: async () => ({ path: "C:/cloudflared.exe", version: "2026.7.3" }),
     spawnImpl: (command, args, options) => {
       invocation = { command, args, options };
@@ -50,9 +65,13 @@ test("TunnelManager starts with an environment token, captures bounded logs, and
 
   const running = manager.status();
   assert.equal(running.state, "running");
+  assert.equal(running.tokenSource, "environment");
   assert.equal(running.version, "2026.7.3");
   assert.deepEqual(running.logs, ["retrying", "ready"]);
   assert.equal(JSON.stringify(running).includes("secret-token-value"), false);
+
+  child.emit("error", new Error("cloudflared rejected secret-token-value"));
+  assert.equal(manager.status().lastError.includes("secret-token-value"), false);
 
   await manager.stop();
   assert.equal(child.killedWith, "SIGTERM");

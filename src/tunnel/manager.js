@@ -8,14 +8,21 @@ class TunnelManager {
   #state = "stopped";
   #lastError = null;
   #version = null;
+  #token;
+  #tokenSource;
+  #hasStoredToken;
 
   constructor({
     token = process.env.CLOUDFLARE_TUNNEL_TOKEN || "",
+    tokenSource = token ? "environment" : "none",
+    hasStoredToken = false,
     ensureBinary = async () => { throw new Error("cloudflared binary is not configured"); },
     spawnImpl = spawn,
     maxLogs = 100,
   } = {}) {
-    this.token = String(token);
+    this.#token = String(token);
+    this.#tokenSource = tokenSource;
+    this.#hasStoredToken = Boolean(hasStoredToken);
     this.ensureBinary = ensureBinary;
     this.spawnImpl = spawnImpl;
     this.maxLogs = maxLogs;
@@ -23,7 +30,9 @@ class TunnelManager {
 
   status() {
     return {
-      available: Boolean(this.token),
+      available: Boolean(this.#token),
+      tokenSource: this.#tokenSource,
+      hasStoredToken: this.#hasStoredToken,
       state: this.#state,
       version: this.#version,
       lastError: this.#lastError,
@@ -31,14 +40,31 @@ class TunnelManager {
     };
   }
 
+  configure({ token, tokenSource, hasStoredToken }) {
+    if (typeof token !== "string") throw new TypeError("Tunnel token must be a string");
+    if (!new Set(["environment", "config", "none"]).has(tokenSource)) {
+      throw new TypeError("Tunnel token source is invalid");
+    }
+    if (this.#child && token !== this.#token) throw new Error("Tunnel must be stopped before replacing its token");
+    this.#token = token;
+    this.#tokenSource = tokenSource;
+    this.#hasStoredToken = Boolean(hasStoredToken);
+    return this.status();
+  }
+
+  #redact(value) {
+    const text = String(value);
+    return this.#token ? text.split(this.#token).join("[redacted]") : text;
+  }
+
   #addLog(chunk) {
-    const redacted = String(chunk).split(this.token).join("[redacted]");
+    const redacted = this.#redact(chunk);
     for (const line of redacted.split(/\r?\n/).filter(Boolean)) this.#logs.push(line);
     if (this.#logs.length > this.maxLogs) this.#logs.splice(0, this.#logs.length - this.maxLogs);
   }
 
   async start() {
-    if (!this.token) throw new Error("CLOUDFLARE_TUNNEL_TOKEN is not configured");
+    if (!this.#token) throw new Error("CLOUDFLARE_TUNNEL_TOKEN is not configured");
     if (this.#child) return this.status();
     this.#state = "starting";
     this.#lastError = null;
@@ -46,7 +72,7 @@ class TunnelManager {
       const binary = await this.ensureBinary();
       this.#version = binary.version || null;
       const child = this.spawnImpl(binary.path, ["tunnel", "run"], {
-        env: { ...process.env, TUNNEL_TOKEN: this.token },
+        env: { ...process.env, TUNNEL_TOKEN: this.#token },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -54,7 +80,7 @@ class TunnelManager {
       child.stdout?.on("data", (chunk) => this.#addLog(chunk));
       child.stderr?.on("data", (chunk) => this.#addLog(chunk));
       child.once("error", (error) => {
-        this.#lastError = error.message;
+        this.#lastError = this.#redact(error.message);
         this.#state = "error";
       });
       child.once("exit", (code) => {
@@ -70,7 +96,7 @@ class TunnelManager {
       return this.status();
     } catch (error) {
       this.#state = "error";
-      this.#lastError = error.message;
+      this.#lastError = this.#redact(error.message);
       throw error;
     }
   }
