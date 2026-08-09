@@ -16,9 +16,16 @@ const DEFAULT_CONFIG = Object.freeze({
     { name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query", timeoutMs: 5000 },
     { name: "Google", url: "https://dns.google/dns-query", timeoutMs: 5000 },
   ],
+  tunnel: { token: "" },
   records: [],
   routes: [],
 });
+
+function migrateConfig(input) {
+  const migrated = structuredClone(input);
+  if (!("tunnel" in migrated)) migrated.tunnel = { token: "" };
+  return migrated;
+}
 
 function validatePortGroup(name, value) {
   if (!value || typeof value.host !== "string" || !value.host.trim()) throw new TypeError(`${name} host is required`);
@@ -42,6 +49,9 @@ function validateConfig(input) {
       throw new TypeError(`Upstream ${index} must have a name and HTTPS URL`);
     }
   });
+  if (!input.tunnel || typeof input.tunnel !== "object" || typeof input.tunnel.token !== "string") {
+    throw new TypeError("Tunnel token must be a string");
+  }
   const records = new RecordStore(input.records);
   new ProxyRoutes(input.routes, { records });
   return structuredClone(input);
@@ -57,7 +67,10 @@ class ConfigStore {
 
   async load() {
     try {
-      this.#config = validateConfig(await readJson(this.filePath));
+      const stored = await readJson(this.filePath);
+      const migrated = migrateConfig(stored);
+      this.#config = validateConfig(migrated);
+      if (!("tunnel" in stored)) await writeJsonAtomic(this.filePath, this.#config);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       this.#config = structuredClone(DEFAULT_CONFIG);
@@ -85,4 +98,4 @@ class ConfigStore {
   }
 }
 
-module.exports = { ConfigStore, DEFAULT_CONFIG, validateConfig };
+module.exports = { ConfigStore, DEFAULT_CONFIG, migrateConfig, validateConfig };
