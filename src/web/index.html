@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>S12 DNS Server</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳至主要內容</a>
+  <div id="loading" class="loading-screen" role="status" aria-live="polite">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>正在連線至控制台</span>
+  </div>
+
+  <main id="auth-view" class="auth-layout" hidden>
+    <section class="auth-panel" aria-labelledby="auth-title">
+      <div class="brand-mark" aria-hidden="true">S12</div>
+      <p class="eyebrow">S12 DNS SERVER</p>
+      <h1 id="auth-title">登入管理介面</h1>
+      <p id="auth-copy" class="muted">使用管理員密碼繼續。</p>
+      <form id="auth-form">
+        <label id="token-field" hidden>Setup token
+          <input id="setup-token" name="token" autocomplete="one-time-code">
+        </label>
+        <label><span id="password-label">密碼</span>
+          <input id="password" name="password" type="password" minlength="12" autocomplete="current-password" required>
+        </label>
+        <p id="auth-error" class="form-message error" role="alert" hidden></p>
+        <button id="auth-submit" class="primary wide" type="submit">登入</button>
+      </form>
+    </section>
+    <aside class="auth-aside" aria-label="服務資訊">
+      <p class="eyebrow">SELF-HOSTED NETWORK EDGE</p>
+      <h2>解析、轉送與發布，都在一個控制面。</h2>
+      <dl class="auth-facts">
+        <div><dt>DNS</dt><dd>UDP / TCP</dd></div>
+        <div><dt>DoH</dt><dd>RFC 8484</dd></div>
+        <div><dt>Proxy</dt><dd>HTTP / WebSocket</dd></div>
+      </dl>
+    </aside>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark small" aria-hidden="true">S12</span><span>S12 DNS</span></div>
+      <nav aria-label="主要導覽">
+        <button class="nav-button active" data-view="overview">系統總覽</button>
+        <button class="nav-button" data-view="records">DNS 記錄</button>
+        <button class="nav-button" data-view="routes">代理路由</button>
+        <button class="nav-button" data-view="tunnel">Cloudflare Tunnel</button>
+        <button class="nav-button" data-view="events">事件日誌</button>
+      </nav>
+      <div class="sidebar-actions">
+        <button id="theme-toggle" class="secondary" type="button" aria-label="切換主題">切換主題</button>
+        <button id="logout" class="text-button" type="button">登出</button>
+      </div>
+    </aside>
+
+    <main id="main-content" class="workspace" tabindex="-1">
+      <header class="topbar">
+        <div><p class="eyebrow">CONTROL PLANE</p><h1 id="page-title">系統總覽</h1></div>
+        <span id="connection-state" class="status-badge success">服務已連線</span>
+      </header>
+
+      <section id="view-overview" class="view" aria-labelledby="page-title">
+        <div id="service-grid" class="metric-grid"></div>
+        <div class="content-grid">
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">RESOLVERS</p><h2>上游健康</h2></div></div><div id="upstream-list" class="list"></div></section>
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>近期事件</h2></div></div><div id="recent-events" class="list"></div></section>
+        </div>
+      </section>
+
+      <section id="view-records" class="view" hidden>
+        <div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><h2>自訂 DNS 記錄</h2><p class="muted">精確名稱優先於萬用字元。</p></div><button id="add-record" class="primary" type="button">新增記錄</button></div>
+        <div id="records-list" class="data-list"></div>
+      </section>
+
+      <section id="view-routes" class="view" hidden>
+        <div class="section-heading"><div><p class="eyebrow">HOST ROUTING</p><h2>反向代理路由</h2><p class="muted">只有明確建立的 Host 才會公開。</p></div><button id="add-route" class="primary" type="button">新增路由</button></div>
+        <div id="routes-list" class="data-list"></div>
+      </section>
+
+      <section id="view-tunnel" class="view" hidden>
+        <div class="section-heading"><div><p class="eyebrow">PUBLIC EDGE</p><h2>Cloudflare Tunnel</h2><p class="muted">Token 僅由伺服器環境讀取。</p></div></div>
+        <div class="tunnel-layout"><section class="panel tunnel-state"><span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p><div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div></section><section class="panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section></div>
+      </section>
+
+      <section id="view-events" class="view" hidden>
+        <div class="section-heading"><div><p class="eyebrow">MEMORY ONLY</p><h2>事件日誌</h2><p class="muted">最多保留最近 500 筆，重新啟動後清除。</p></div><button id="refresh-events" class="secondary" type="button">重新整理</button></div>
+        <div id="events-list" class="data-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="record-dialog">
+    <form id="record-form" method="dialog">
+      <div class="dialog-heading"><h2>新增 DNS 記錄</h2><button class="icon-button" value="cancel" aria-label="關閉" formnovalidate>×</button></div>
+      <div class="form-grid">
+        <label>記錄名稱<input name="name" placeholder="home.example.com" required></label>
+        <label>類型<select name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label>
+        <label class="full">記錄值<input name="value" placeholder="192.0.2.10" required></label>
+        <label>TTL<input name="ttl" type="number" min="0" value="300" required></label>
+      </div>
+      <p class="dialog-error form-message error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="secondary" value="cancel" formnovalidate>取消</button><button class="primary" value="default">儲存記錄</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="route-dialog">
+    <form id="route-form" method="dialog">
+      <div class="dialog-heading"><h2>新增代理路由</h2><button class="icon-button" value="cancel" aria-label="關閉" formnovalidate>×</button></div>
+      <div class="form-grid"><label>公開主機名<input name="host" placeholder="app.example.com" required></label><label class="full">目標 URL<input name="target" type="url" placeholder="http://192.0.2.10:8080" required></label></div>
+      <p class="dialog-error form-message error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="secondary" value="cancel" formnovalidate>取消</button><button class="primary" value="default">儲存路由</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
