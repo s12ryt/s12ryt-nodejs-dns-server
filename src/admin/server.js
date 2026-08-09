@@ -1,0 +1,209 @@
+"use strict";
+
+const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+
+const { EventLog } = require("./event-log");
+
+const COOKIE_NAME = "s12_session";
+const MAX_JSON_BODY = 1024 * 1024;
+
+function parseCookies(header) {
+  return Object.fromEntries(String(header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const separator = part.indexOf("=");
+    return separator === -1 ? [part, ""] : [part.slice(0, separator), decodeURIComponent(part.slice(separator + 1))];
+  }));
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+      reject(Object.assign(new Error("Content-Type must be application/json"), { statusCode: 415 }));
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_JSON_BODY) {
+        reject(Object.assign(new Error("Request body is too large"), { statusCode: 413 }));
+        request.destroy();
+      } else chunks.push(chunk);
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+      } catch {
+        reject(Object.assign(new Error("Request body is not valid JSON"), { statusCode: 400 }));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+function sendJson(response, statusCode, value, headers = {}) {
+  const body = value === null ? "" : JSON.stringify(value);
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    ...headers,
+  }).end(body);
+}
+
+function sessionCookie(id, { clear = false } = {}) {
+  const value = clear ? "" : encodeURIComponent(id);
+  return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 28800}`;
+}
+
+function sendStatic(response, fileName, content) {
+  const contentType = fileName.endsWith(".css") ? "text/css; charset=utf-8"
+    : fileName.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8";
+  response.writeHead(200, {
+    "content-type": contentType,
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  }).end(content);
+}
+
+function createAdminService({
+  auth,
+  config,
+  tunnel,
+  events = new EventLog(),
+  status = () => ({}),
+  staticDirectory = path.join(__dirname, "..", "web"),
+  staticFiles = globalThis.__S12_WEB_ASSETS__ || null,
+  host = "0.0.0.0",
+  port = 8081,
+} = {}) {
+  if (!auth || !config || !tunnel) throw new TypeError("auth, config and tunnel are required");
+  let server;
+
+  function authorize(request) {
+    const id = parseCookies(request.headers.cookie)[COOKIE_NAME];
+    const session = auth.authenticate(id);
+    return session ? { id, session } : null;
+  }
+
+  async function handleApi(request, response, url) {
+    if (request.method === "GET" && url.pathname === "/api/bootstrap") {
+      sendJson(response, 200, { configured: auth.isConfigured() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/setup") {
+      try {
+        const body = await readJsonBody(request);
+        await auth.setup(body.token, body.password);
+        const session = auth.createSession();
+        events.add({ kind: "auth", message: "Administrator configured" });
+        sendJson(response, 201, { username: "admin", csrf: session.csrf }, { "set-cookie": sessionCookie(session.id) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/login") {
+      try {
+        const body = await readJsonBody(request);
+        if (body.username !== "admin") throw new Error("Invalid credentials");
+        const session = await auth.login(request.socket.remoteAddress, body.password);
+        events.add({ kind: "auth", message: "Administrator signed in" });
+        sendJson(response, 200, { username: "admin", csrf: session.csrf }, { "set-cookie": sessionCookie(session.id) });
+      } catch (error) {
+        const statusCode = /too many/i.test(error.message) ? 429 : (error.statusCode || 401);
+        sendJson(response, statusCode, { error: error.message });
+      }
+      return;
+    }
+
+    const authorized = authorize(request);
+    if (!authorized) {
+      sendJson(response, 401, { error: "Authentication required" });
+      return;
+    }
+    if (!["GET", "HEAD"].includes(request.method)
+      && !auth.validateCsrf(authorized.id, request.headers["x-csrf-token"])) {
+      sendJson(response, 403, { error: "Invalid CSRF token" });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/session") {
+      sendJson(response, 200, { username: "admin", csrf: authorized.session.csrf });
+    } else if (request.method === "POST" && url.pathname === "/api/logout") {
+      auth.destroySession(authorized.id);
+      sendJson(response, 204, null, { "set-cookie": sessionCookie("", { clear: true }) });
+    } else if (request.method === "GET" && url.pathname === "/api/config") {
+      sendJson(response, 200, config.get());
+    } else if (request.method === "PUT" && url.pathname === "/api/config") {
+      try {
+        const updated = await config.update(await readJsonBody(request));
+        events.add({ kind: "config", message: "Configuration updated" });
+        sendJson(response, 200, updated);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/status") {
+      sendJson(response, 200, status());
+    } else if (request.method === "GET" && url.pathname === "/api/events") {
+      sendJson(response, 200, events.list());
+    } else if (request.method === "GET" && url.pathname === "/api/tunnel") {
+      sendJson(response, 200, tunnel.status());
+    } else if (request.method === "POST" && ["/api/tunnel/start", "/api/tunnel/stop"].includes(url.pathname)) {
+      try {
+        if (url.pathname.endsWith("start")) await tunnel.start();
+        else await tunnel.stop();
+        events.add({ kind: "tunnel", message: `Tunnel ${url.pathname.endsWith("start") ? "started" : "stopped"}` });
+        sendJson(response, 200, tunnel.status());
+      } catch (error) {
+        sendJson(response, 503, { error: error.message });
+      }
+    } else {
+      sendJson(response, 404, { error: "API endpoint not found" });
+    }
+  }
+
+  function serveStatic(request, response, url) {
+    const requested = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+    const allowed = new Set(["index.html", "app.js", "styles.css"]);
+    const fileName = allowed.has(requested) ? requested : "index.html";
+    const embedded = staticFiles?.[fileName];
+    if (typeof embedded === "string") {
+      sendStatic(response, fileName, embedded);
+      return;
+    }
+    const filePath = path.join(staticDirectory, fileName);
+    fs.readFile(filePath, (error, content) => {
+      if (error) {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+      sendStatic(response, fileName, content);
+    });
+  }
+
+  return {
+    async start() {
+      server = http.createServer((request, response) => {
+        const url = new URL(request.url, "http://localhost");
+        if (url.pathname.startsWith("/api/")) handleApi(request, response, url).catch(() => {
+          if (!response.headersSent) sendJson(response, 500, { error: "Internal server error" });
+        });
+        else serveStatic(request, response, url);
+      });
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, host, resolve);
+      });
+    },
+    address: () => server?.address(),
+    async close() {
+      if (!server) return;
+      server.closeAllConnections?.();
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      server = undefined;
+    },
+  };
+}
+
+module.exports = { COOKIE_NAME, createAdminService, parseCookies, readJsonBody, sessionCookie };
