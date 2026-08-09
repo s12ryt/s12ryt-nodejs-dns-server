@@ -44,7 +44,7 @@ Bootstrap 會從本倉庫最新 Release 取得 manifest，校驗完整 runtime �
 
 ## Cloudflare Tunnel
 
-在 Cloudflare 建立 remotely-managed tunnel，將公開 hostname 指向本機 DoH，例如 `http://localhost:8053`，再以環境變數提供 token：
+在 Cloudflare 建立 remotely-managed tunnel，將公開 hostname 指向本機 DoH，例如 `http://localhost:8053`。建議以環境變數提供 token：
 
 ```bash
 CLOUDFLARE_TUNNEL_TOKEN=your-token node index.js
@@ -57,7 +57,19 @@ $env:CLOUDFLARE_TUNNEL_TOKEN = "your-token"
 node index.js
 ```
 
-Token 只傳給 cloudflared 子程序，不會寫入設定檔或由 API 回傳。cloudflared 下載或啟動失敗不會阻止 DNS、DoH、代理及管理服務。
+無法設定啟動環境變數的面板，可在管理介面的 Tunnel 頁儲存 token，或在服務停止時設定 `data/config.json`：
+
+```json
+{
+  "tunnel": {
+    "token": "your-token"
+  }
+}
+```
+
+`CLOUDFLARE_TUNNEL_TOKEN` 永遠優先於設定檔；環境 token 存在時，設定檔值只作備援。管理 API 與 UI 不會回傳 token 明文，只顯示目前來源及是否已有備援。若以新設定檔 token 重啟 Tunnel 失敗，服務會回滾舊值並嘗試恢復原連線，不影響 DNS、DoH、代理及管理核心。
+
+設定檔 token 是本機明文機密。請限制 `data/config.json` 的檔案權限、備份範圍及面板檔案瀏覽權限；能使用環境變數時仍應優先使用環境變數。
 
 ## 代理路由
 
@@ -86,6 +98,7 @@ npm run build
 ## 安全邊界
 
 - 管理介面預設開放區網，部署者應使用防火牆限制可信網段。
+- `data/config.json` 可包含 Cloudflare Tunnel token，必須視為機密檔案並限制存取。
 - DNSSEC 僅透傳，不在本機驗證。
 - 不支援 AXFR/IXFR、RFC 2136 動態更新或本機 TLS 憑證管理。
 - 即時事件只保留於記憶體，最多 500 筆；不永久保存 DNS 查詢內容。
