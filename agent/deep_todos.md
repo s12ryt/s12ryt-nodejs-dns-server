@@ -1,0 +1,16 @@
+# 完整歷史任務
+
+## 2026-08-10：初始完整實作
+
+- [x] 讀取 `todos.md` 並確認工作區沒有既有程式、測試或 Git 歷史。
+- [x] 逐輪確認功能範圍、協定、安全、平台、UI、發布及驗收契約。
+- [x] 將確認結果寫入 `agent/question.md`。
+- [x] 查核 Node.js、RFC 8484、Cloudflare Tunnel 與無障礙 UI 實作依據。
+- [x] 建立 Node.js 20+ 測試基線、lint、build 與 Playwright 專案骨架。
+- [x] 依 TDD 完成 DNS/DoH、自訂記錄、快取與多上游容錯。
+- [x] 依 TDD 完成反向代理、管理安全/API 與 Tunnel 管理。
+- [x] 依 TDD 完成響應式管理 UI 與 Playwright E2E。
+- [x] 依 TDD 完成單檔 bootstrap、下載校驗、快取及離線核心。
+- [x] 完成 43 項單元/整合測試、2 項 E2E、lint、build、audit 與打包驗證。
+- [x] 完成 README、AGPL-3.0-or-later 授權與 CI/Release workflow。
+- [ ] 建立公開 GitHub 倉庫、v0.1.0 Release，並由 Release `index.js` 驗證啟動。
