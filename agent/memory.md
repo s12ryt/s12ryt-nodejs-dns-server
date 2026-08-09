@@ -26,3 +26,6 @@
 - 完成運行中 token 切換、失敗後原子回滾與舊 Tunnel 恢復；環境 token 存在時僅更新 config 備援，不重啟有效連線。
 - 完成專用 `PUT/DELETE /api/tunnel/token`、一般 config API secret 保留與回應去敏，以及管理 UI 的密碼輸入、來源狀態、儲存與確認清除。
 - 回歸結果：Node 單元/整合 48/48、Playwright 2/2、ESLint、npm audit 與相關 LSP 均通過；版本升至 0.1.1，build runtime SHA-256 為 `73e98a7b163e30ebf0965217b2b686599a9f80ced0e32e8b09ed01ded191db8a`。
+- 推送 9 個 Cloudflare Tunnel token 原子提交並建立 `v0.1.1` tag；GitHub Actions 的 Node 20/22/24、Playwright 與 release jobs 全部成功。
+- `v0.1.1` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；GitHub runtime asset digest 與本機 build/manifest 相符。
+- 由全新暫存目錄只下載 Release `index.js` 冷啟動，管理 API 回應 HTTP 200，active cache 為 `runtime-0.1.1.cjs` 且 SHA-256 為 `73e98a7b163e30ebf0965217b2b686599a9f80ced0e32e8b09ed01ded191db8a`；驗收程序已清理。
