@@ -56,6 +56,17 @@ function sessionCookie(id, { clear = false } = {}) {
   return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 28800}`;
 }
 
+function publicConfig(value) {
+  const result = structuredClone(value);
+  result.tunnel = { hasStoredToken: Boolean(value.tunnel?.token) };
+  return result;
+}
+
+function redactSecret(value, secret) {
+  const message = String(value);
+  return secret ? message.split(secret).join("[redacted]") : message;
+}
+
 function sendStatic(response, fileName, content) {
   const contentType = fileName.endsWith(".css") ? "text/css; charset=utf-8"
     : fileName.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8";
@@ -70,6 +81,8 @@ function createAdminService({
   auth,
   config,
   tunnel,
+  updateTunnelToken,
+  clearTunnelToken,
   events = new EventLog(),
   status = () => ({}),
   staticDirectory = path.join(__dirname, "..", "web"),
@@ -134,12 +147,13 @@ function createAdminService({
       auth.destroySession(authorized.id);
       sendJson(response, 204, null, { "set-cookie": sessionCookie("", { clear: true }) });
     } else if (request.method === "GET" && url.pathname === "/api/config") {
-      sendJson(response, 200, config.get());
+      sendJson(response, 200, publicConfig(config.get()));
     } else if (request.method === "PUT" && url.pathname === "/api/config") {
       try {
-        const updated = await config.update(await readJsonBody(request));
+        const body = await readJsonBody(request);
+        const updated = await config.update({ ...body, tunnel: config.get().tunnel });
         events.add({ kind: "config", message: "Configuration updated" });
-        sendJson(response, 200, updated);
+        sendJson(response, 200, publicConfig(updated));
       } catch (error) {
         sendJson(response, error.statusCode || 400, { error: error.message });
       }
@@ -149,6 +163,30 @@ function createAdminService({
       sendJson(response, 200, events.list());
     } else if (request.method === "GET" && url.pathname === "/api/tunnel") {
       sendJson(response, 200, tunnel.status());
+    } else if (request.method === "PUT" && url.pathname === "/api/tunnel/token") {
+      let submittedToken = "";
+      try {
+        if (typeof updateTunnelToken !== "function") throw Object.assign(new Error("Tunnel token updates are unavailable"), { statusCode: 501 });
+        const { token } = await readJsonBody(request);
+        if (typeof token !== "string" || token.length === 0) {
+          throw Object.assign(new Error("Tunnel token must be a non-empty string"), { statusCode: 400 });
+        }
+        submittedToken = token;
+        const result = await updateTunnelToken(token);
+        events.add({ kind: "tunnel", message: "Stored Tunnel token updated" });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 503, { error: redactSecret(error.message, submittedToken) });
+      }
+    } else if (request.method === "DELETE" && url.pathname === "/api/tunnel/token") {
+      try {
+        if (typeof clearTunnelToken !== "function") throw Object.assign(new Error("Tunnel token updates are unavailable"), { statusCode: 501 });
+        const result = await clearTunnelToken();
+        events.add({ kind: "tunnel", message: "Stored Tunnel token cleared" });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 503, { error: error.message });
+      }
     } else if (request.method === "POST" && ["/api/tunnel/start", "/api/tunnel/stop"].includes(url.pathname)) {
       try {
         if (url.pathname.endsWith("start")) await tunnel.start();
@@ -206,4 +244,4 @@ function createAdminService({
   };
 }
 
-module.exports = { COOKIE_NAME, createAdminService, parseCookies, readJsonBody, sessionCookie };
+module.exports = { COOKIE_NAME, createAdminService, parseCookies, publicConfig, readJsonBody, sessionCookie };
