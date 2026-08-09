@@ -1,0 +1,25 @@
+{
+  "name": "s12ryt-nodejs-dns-server",
+  "version": "0.1.0",
+  "description": "Self-hosted DNS, DoH, reverse proxy, and Cloudflare Tunnel control plane",
+  "license": "AGPL-3.0-or-later",
+  "private": false,
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node scripts/run-tests.js all",
+    "test:unit": "node scripts/run-tests.js unit",
+    "test:integration": "node scripts/run-tests.js integration",
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "build": "node scripts/build.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.8.1"
+  }
+}
