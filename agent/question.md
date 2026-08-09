@@ -49,7 +49,11 @@
 
 ## Cloudflare Tunnel
 
-- `CLOUDFLARE_TUNNEL_TOKEN` 僅從環境變數讀取，不由 API 回傳或寫入設定檔。
+- Cloudflare Tunnel token 可保存於 `data/config.json` 的 `tunnel.token`；預設為空字串，非空設定接受任何字串內容。
+- `CLOUDFLARE_TUNNEL_TOKEN` 的優先級高於 `tunnel.token`。環境變數存在時，config token 僅作備援；UI 可更新或清除備援值，但目前連線不切換或重啟。
+- 管理 API 與 UI 永不回傳已儲存或環境變數 token 的明文，只顯示是否已設定及目前來源。UI 的空白 token 輸入代表保留既有值，並提供需確認的獨立清除操作。
+- 沒有環境 token 時，UI 更新 config token 必須立即套用：若 Tunnel 正在運行，先停止再以新 token 啟動。新 token 啟動失敗時，原子回滾舊 config token，並嘗試恢復舊 Tunnel；失敗不得中斷 DNS/DoH/代理/管理核心。
+- 沒有環境 token 時，清除 config token 必須停止正在運行的 Tunnel，將狀態改為不可使用，並原子保存空字串。
 - 有 token 時隨完整服務自動下載、校驗並啟動官方 `cloudflared`；失敗不得阻止 DNS/DoH/代理/管理核心服務啟動。
 - UI 可檢視下載進度、版本、狀態、最近日誌，並手動啟動或停止。
 - 自動化驗收使用模擬 cloudflared 程序，不要求本次提供真實 Cloudflare token 或公開 hostname。
@@ -74,6 +78,7 @@
 ## 驗收標準
 
 - 使用 Node.js 內建 test runner 完成單元及整合測試，涵蓋 DNS 封包、自訂記錄、TTL 快取、多上游容錯、UDP/TCP、DoH、代理、驗證、設定、bootstrap 與 Tunnel 管理。
+- Tunnel token 測試必須涵蓋 config 持久化、環境變數優先、API 不洩漏、UI 儲存/清除、即時重啟、失敗回滾及核心服務不中斷。
 - 新行為先有因缺少該行為而失敗的 RED 測試，再以最小實作達成 GREEN。
 - 使用 Playwright 驗證首次設密、登入、DNS/代理編輯、Tunnel 狀態、主題切換及手機/桌面響應式畫面，並檢查無明顯重疊或水平溢位。
 - 執行完整測試、lint、build、Release bundle/manifest 校驗及僅保留 `index.js` 的下載啟動測試。
