@@ -20,3 +20,9 @@
 - 建立 `v0.1.0` Release，資產包含 `index.js`、`runtime.cjs`、`manifest.json`；GitHub asset digest 與本機 build digest 相符。
 - 由全新暫存目錄只下載 Release `index.js` 冷啟動：初始目錄僅一檔，成功下載 runtime 0.1.0、驗證 SHA-256 `d57645836c934d53229d3ffa2e97f80f640ea67dee8ca1d2e074a99c94ca154a`、建立 active cache，管理 API 回應 HTTP 200。
 - 冷啟動第一次發現較早驗收遺留的孤立 `node index.js` 佔用 UDP/TCP 5354；確認父程序已消失且管理 API 不可達後終止該 PID，再完成驗收。
+- 依新需求確認 Cloudflare Tunnel token 可保存於 `data/config.json`，環境變數優先，管理 API/UI 永不回傳明文。
+- 先以 9/9 既有相關測試建立基線，再新增 config migration、manager 去敏、runtime 更新/回滾、API 與 UI 儲存/清除的 RED 測試。
+- 完成 `tunnel.token` 持久化與 v0.1.0 設定 migration；Token 在 manager 內改為私有狀態，公開 status 僅含來源與是否已儲存。
+- 完成運行中 token 切換、失敗後原子回滾與舊 Tunnel 恢復；環境 token 存在時僅更新 config 備援，不重啟有效連線。
+- 完成專用 `PUT/DELETE /api/tunnel/token`、一般 config API secret 保留與回應去敏，以及管理 UI 的密碼輸入、來源狀態、儲存與確認清除。
+- 回歸結果：Node 單元/整合 48/48、Playwright 2/2、ESLint、npm audit 與相關 LSP 均通過；版本升至 0.1.1，build runtime SHA-256 為 `73e98a7b163e30ebf0965217b2b686599a9f80ced0e32e8b09ed01ded191db8a`。

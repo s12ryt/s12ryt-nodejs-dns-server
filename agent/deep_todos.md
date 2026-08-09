@@ -15,3 +15,13 @@
 - [x] 完成 README、AGPL-3.0-or-later 授權與 CI/Release workflow。
 - [x] 建立公開 GitHub 倉庫與 v0.1.0 Release。
 - [x] 在全新暫存目錄僅放入 Release `index.js`，驗證其下載並校驗 runtime、建立有效 cache，且管理 API 回應 200。
+
+## 2026-08-10：Cloudflare Tunnel token 設定檔支援
+
+- [x] 確認環境變數優先、設定檔備援、API 去敏、更新回滾與清除語意。
+- [x] 先建立 config migration、Tunnel manager、runtime、管理 API 與 UI 的失敗測試。
+- [x] 在 `data/config.json` 新增 `tunnel.token`，並相容遷移 v0.1.0 設定。
+- [x] 完成 token 來源切換、執行中重啟、失敗原子回滾及舊 Tunnel 恢復。
+- [x] 完成不回傳明文的專用管理 API，以及 UI 儲存、狀態顯示與確認清除操作。
+- [x] 完成 48 項單元/整合測試、2 項 E2E、lint、audit、LSP 與 v0.1.1 build 驗證。
+- [ ] 建立並驗證 v0.1.1 Release 與單檔冷啟動。
