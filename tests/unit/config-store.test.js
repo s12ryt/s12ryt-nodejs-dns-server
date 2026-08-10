@@ -15,6 +15,9 @@ test("ConfigStore creates defaults and persists validated updates atomically", a
 
   assert.deepEqual(await store.load(), DEFAULT_CONFIG);
   assert.deepEqual(store.get().tunnel, { token: "" });
+  assert.deepEqual(store.get().domains, []);
+  assert.deepEqual(store.get().proxy.trustedProxyCidrs, ["127.0.0.1/32", "::1/128"]);
+  assert.equal(store.get().proxy.cacheMaxBytes, 1024 * 1024 * 1024);
   const updated = await store.update({
     ...store.get(),
     tunnel: { token: "saved-cloudflare-token" },
@@ -39,15 +42,25 @@ test("ConfigStore rejects invalid updates without changing memory or disk", asyn
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "config.json"), "utf8")), before);
 });
 
-test("ConfigStore migrates a legacy configuration without a Tunnel section", async (t) => {
+test("ConfigStore migrates a legacy configuration without Tunnel or domain sections", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-config-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const legacy = structuredClone(DEFAULT_CONFIG);
   delete legacy.tunnel;
+  delete legacy.domains;
+  delete legacy.proxy.trustedProxyCidrs;
+  delete legacy.proxy.cacheMaxBytes;
+  legacy.routes = [{ host: "legacy.test", target: "http://127.0.0.1:3000", enabled: true }];
   await fs.writeFile(path.join(directory, "config.json"), JSON.stringify(legacy), "utf8");
 
   const store = new ConfigStore({ directory });
   const loaded = await store.load();
 
   assert.deepEqual(loaded.tunnel, { token: "" });
+  assert.deepEqual(loaded.domains, []);
+  assert.deepEqual(loaded.proxy.trustedProxyCidrs, ["127.0.0.1/32", "::1/128"]);
+  assert.equal(loaded.proxy.cacheMaxBytes, 1024 * 1024 * 1024);
+  assert.equal(loaded.routes[0].locations[0].path, "/");
+  assert.equal(loaded.routes[0].locations[0].upstreams[0].target, "http://127.0.0.1:3000");
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "config.json"), "utf8")), loaded);
 });

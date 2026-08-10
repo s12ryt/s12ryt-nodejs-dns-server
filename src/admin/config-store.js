@@ -3,13 +3,21 @@
 const path = require("node:path");
 
 const { RecordStore } = require("../dns/records");
-const { ProxyRoutes } = require("../services/proxy-routes");
+const { ProxyRoutes, migrateRoute } = require("../services/proxy-routes");
+const { normalizeCidrs } = require("../services/proxy-security");
 const { readJson, writeJsonAtomic } = require("./atomic-file");
+const { normalizeDomains } = require("./domains");
 
 const DEFAULT_CONFIG = Object.freeze({
   dns: { host: "0.0.0.0", port: 5354 },
   doh: { host: "0.0.0.0", port: 8053 },
-  proxy: { host: "0.0.0.0", port: 8080, timeoutMs: 30000 },
+  proxy: {
+    host: "0.0.0.0",
+    port: 8080,
+    timeoutMs: 30000,
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    cacheMaxBytes: 1024 * 1024 * 1024,
+  },
   admin: { host: "0.0.0.0", port: 8081 },
   cache: { maxEntries: 1000, minTtl: 1, maxTtl: 86400 },
   upstreams: [
@@ -17,6 +25,7 @@ const DEFAULT_CONFIG = Object.freeze({
     { name: "Google", url: "https://dns.google/dns-query", timeoutMs: 5000 },
   ],
   tunnel: { token: "" },
+  domains: [],
   records: [],
   routes: [],
 });
@@ -24,6 +33,9 @@ const DEFAULT_CONFIG = Object.freeze({
 function migrateConfig(input) {
   const migrated = structuredClone(input);
   if (!("tunnel" in migrated)) migrated.tunnel = { token: "" };
+  if (!("domains" in migrated)) migrated.domains = [];
+  migrated.proxy = { ...structuredClone(DEFAULT_CONFIG.proxy), ...(migrated.proxy || {}) };
+  migrated.routes = (migrated.routes || []).map(migrateRoute);
   return migrated;
 }
 
@@ -37,6 +49,12 @@ function validateConfig(input) {
   for (const name of ["dns", "doh", "proxy", "admin"]) validatePortGroup(name, input[name]);
   if (!Number.isInteger(input.proxy.timeoutMs) || input.proxy.timeoutMs < 100 || input.proxy.timeoutMs > 300000) {
     throw new RangeError("Proxy timeout is invalid");
+  }
+  const trustedProxyCidrs = normalizeCidrs(input.proxy.trustedProxyCidrs, "Trusted proxy CIDRs");
+  if (!Number.isInteger(input.proxy.cacheMaxBytes)
+    || input.proxy.cacheMaxBytes < 1
+    || input.proxy.cacheMaxBytes > 1024 * 1024 * 1024 * 1024) {
+    throw new RangeError("Proxy cache size is invalid");
   }
   const { maxEntries, minTtl, maxTtl } = input.cache || {};
   if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 100000) throw new RangeError("Cache size is invalid");
@@ -52,9 +70,12 @@ function validateConfig(input) {
   if (!input.tunnel || typeof input.tunnel !== "object" || typeof input.tunnel.token !== "string") {
     throw new TypeError("Tunnel token must be a string");
   }
-  const records = new RecordStore(input.records);
-  new ProxyRoutes(input.routes, { records });
-  return structuredClone(input);
+  const validated = structuredClone(input);
+  validated.proxy.trustedProxyCidrs = trustedProxyCidrs;
+  validated.domains = normalizeDomains(validated.domains);
+  const records = new RecordStore(validated.records);
+  validated.routes = new ProxyRoutes(validated.routes, { records }).toJSON();
+  return validated;
 }
 
 class ConfigStore {
@@ -70,7 +91,7 @@ class ConfigStore {
       const stored = await readJson(this.filePath);
       const migrated = migrateConfig(stored);
       this.#config = validateConfig(migrated);
-      if (!("tunnel" in stored)) await writeJsonAtomic(this.filePath, this.#config);
+      if (JSON.stringify(stored) !== JSON.stringify(migrated)) await writeJsonAtomic(this.filePath, this.#config);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       this.#config = structuredClone(DEFAULT_CONFIG);
