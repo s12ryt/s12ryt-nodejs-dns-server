@@ -49,3 +49,20 @@ test("DoH upstream rejects an invalid response media type", async () => {
   });
   await assert.rejects(upstream.resolve(createQuery("example.com")), UpstreamError);
 });
+
+test("DoH upstream exposes a health probe without requiring client traffic", async () => {
+  const questions = [];
+  const upstream = createDohUpstream({
+    name: "health-test",
+    url: "https://resolver.test/dns-query",
+    fetchImpl: async (_url, options) => {
+      questions.push(Buffer.from(options.body));
+      return new Response(options.body, { headers: { "content-type": "application/dns-message" } });
+    },
+  });
+
+  assert.equal(upstream.status().healthy, null);
+  await upstream.probe();
+  assert.equal(questions.length, 1);
+  assert.equal(upstream.status().healthy, true);
+});

@@ -2,6 +2,7 @@
 
 const { performance } = require("node:perf_hooks");
 
+const { createQuery } = require("./message");
 const { UpstreamError } = require("./resolver");
 
 function mediaType(value) {
@@ -16,6 +17,9 @@ function createDohUpstream({ name = "DoH", url, timeoutMs = 5000, fetchImpl = fe
     name,
     status() {
       return { ...currentStatus };
+    },
+    async probe() {
+      return this.resolve(createQuery("example.com", "A", { id: 0 }));
     },
     async resolve(queryWire) {
       const started = performance.now();
