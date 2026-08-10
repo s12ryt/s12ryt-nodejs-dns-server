@@ -35,3 +35,4 @@
 - [x] 完成桌面 icon 導覽、手機五欄底部導覽、頂部主題/登出工具與可存取的 dialog/form 控制。
 - [x] 驗證 375、768、1024、1440 px 無水平溢位，以及深色、淺色、手機截圖與鍵盤 skip link。
 - [x] 完成 48 項單元/整合測試、3 項 E2E、lint、audit、LSP 與 v0.1.2 build 驗證。
+- [x] 建立並驗證 v0.1.2 Release，以及只有 Release `index.js` 的單檔冷啟動與 runtime digest。
