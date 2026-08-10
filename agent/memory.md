@@ -29,3 +29,8 @@
 - 推送 9 個 Cloudflare Tunnel token 原子提交並建立 `v0.1.1` tag；GitHub Actions 的 Node 20/22/24、Playwright 與 release jobs 全部成功。
 - `v0.1.1` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；GitHub runtime asset digest 與本機 build/manifest 相符。
 - 由全新暫存目錄只下載 Release `index.js` 冷啟動，管理 API 回應 HTTP 200，active cache 為 `runtime-0.1.1.cjs` 且 SHA-256 為 `73e98a7b163e30ebf0965217b2b686599a9f80ced0e32e8b09ed01ded191db8a`；驗收程序已清理。
+- 依自主 UX 疊代需求，維持原生 HTML/CSS/JavaScript 與既有公開契約，盤點並改善總覽監控、完整操作流程、手機導覽及鍵盤使用。
+- 先建立健康摘要、`aria-current`、表單 busy、手機主題/登出、375/768/1024/1440 無溢位、深淺色截圖及 skip link 的 RED 測試。
+- 完成核心服務健康摘要、記錄/路由/快取統計、可讀狀態、繁中事件與時間、統一非同步回饋、SVG 圖示及響應式五欄底部導覽。
+- 修正 icon-only busy 狀態不應移除 SVG，並為 dialog、導覽、主題切換及 skip link 補齊可存取名稱與焦點行為。
+- 回歸結果：Node 單元/整合 48/48、Playwright 3/3、ESLint、npm audit、JS LSP 與 v0.1.2 build 契約均通過；CSS 僅保留 `[hidden]` 與 reduced-motion 必要 `!important` 提示。
