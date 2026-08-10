@@ -70,13 +70,26 @@ test.describe.serial("管理介面", () => {
     await page.getByLabel("新密碼").fill(password);
     await page.getByRole("button", { name: "建立管理員" }).click();
     await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "核心服務皆已就緒" })).toBeVisible();
+    await expect(page.getByTestId("service-readiness")).toHaveText("4 / 4");
+    await expect(page.getByRole("button", { name: "系統總覽" })).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#recent-events").getByText("管理員設定完成", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "DNS 記錄" }).click();
+    await expect(page.getByRole("button", { name: "DNS 記錄" })).toHaveAttribute("aria-current", "page");
     await page.getByRole("button", { name: "新增記錄" }).click();
     await page.getByLabel("記錄名稱").fill("home.test");
     await page.getByLabel("記錄值").fill("192.0.2.88");
-    await page.getByRole("button", { name: "儲存記錄" }).click();
+    await page.route("**/api/config", async (route) => {
+      if (route.request().method() === "PUT") await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.continue();
+    });
+    const saveRecord = page.locator("#record-form button[value='default']");
+    await saveRecord.click();
+    await expect(saveRecord).toBeDisabled();
+    await expect(saveRecord).toHaveText("儲存中…");
     await expect(page.getByText("home.test", { exact: true })).toBeVisible();
+    await page.unroute("**/api/config");
 
     await page.getByRole("button", { name: "代理路由" }).click();
     await page.getByRole("button", { name: "新增路由" }).click();
@@ -104,9 +117,13 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByRole("button", { name: "啟動 Tunnel" })).toBeDisabled();
     expect(runtime.config.get().tunnel.token).toBe("");
 
-    await page.getByRole("button", { name: "切換主題" }).click();
-    await expect(page.locator("html")).toHaveAttribute("data-theme", /light|dark/);
-    await page.screenshot({ path: "test-results/admin-desktop.png", fullPage: true });
+    const themeToggle = page.getByRole("button", { name: "切換主題" });
+    if (await page.locator("html").getAttribute("data-theme") !== "light") await themeToggle.click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await page.screenshot({ path: "test-results/admin-desktop-light.png", fullPage: true });
+    await themeToggle.click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.screenshot({ path: "test-results/admin-desktop-dark.png", fullPage: true });
   });
 
   test("已設定管理員可在手機登入且頁面不水平溢位", async ({ page }) => {
@@ -115,8 +132,37 @@ test.describe.serial("管理介面", () => {
     await page.getByLabel("密碼").fill(password);
     await page.getByRole("button", { name: "登入" }).click();
     await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "切換主題" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "登出" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "系統總覽" })).toHaveAttribute("aria-current", "page");
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
+    const navigationOverflow = await page.locator(".sidebar nav").evaluate((navigation) => navigation.scrollWidth - navigation.clientWidth);
+    expect(navigationOverflow).toBeLessThanOrEqual(0);
     await page.screenshot({ path: "test-results/admin-mobile.png", fullPage: true });
+  });
+
+  test("各驗收寬度皆可完整操作且不水平溢位", async ({ page }) => {
+    await page.goto(baseUrl);
+    await page.getByLabel("密碼").fill(password);
+    await page.getByRole("button", { name: "登入" }).click();
+    await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "跳至主要內容" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#main-content")).toBeFocused();
+
+    for (const width of [375, 768, 1024, 1440]) {
+      await page.setViewportSize({ width, height: width < 900 ? 812 : 900 });
+      const measurements = await page.evaluate(() => ({
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        navigationOverflow: document.querySelector(".sidebar nav").scrollWidth - document.querySelector(".sidebar nav").clientWidth,
+      }));
+      expect(measurements.documentOverflow, `${width}px 文件不應水平溢位`).toBeLessThanOrEqual(0);
+      expect(measurements.navigationOverflow, `${width}px 導覽不應需要水平捲動`).toBeLessThanOrEqual(0);
+    }
   });
 });
