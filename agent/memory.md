@@ -36,3 +36,12 @@
 - 回歸結果：Node 單元/整合 48/48、Playwright 3/3、ESLint、npm audit、JS LSP 與 v0.1.2 build 契約均通過；CSS 僅保留 `[hidden]` 與 reduced-motion 必要 `!important` 提示。
 - 推送 7 個 UX 與版本化原子提交並建立 `v0.1.2` tag；GitHub Actions 的 main、Node 20/22/24、Playwright 與 release jobs 全部成功。
 - `v0.1.2` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；由起初只有 Release `index.js` 的全新暫存目錄冷啟動，管理 API 回應 HTTP 200，active cache 為 `runtime-0.1.2.cjs`，本機計算與 Release digest 均為 `5431086c07baae696912b26c578c19fc68dc7d10002fd65d304c1e8191738b4f`。
+- 依 DNS 管理與代理擴充需求，先確認記錄完整 CRUD、全自建 modal、CNAME 答案鏈、上游健康探測、DNS 診斷、自訂網域工作區與 Nginx 式代理契約。
+- 先以 RED 測試重現 CNAME 只回 alias、上游等待首次查詢、DNS 診斷 endpoint 缺失、網域模型缺失、舊 proxy route 無 location／多上游／安全政策，以及 UI 仍使用原生 dialog／confirm 且無編輯刪除入口。
+- 完成 CNAME 自訂與上游追查、循環／16 層深度防護，以及啟動時立即、之後每 300000 ms 的非阻塞上游健康 probe。
+- 完成 DNS 診斷 API，回傳 rcode、來源、answers 與 authorities；完成網域 migration、相對名稱、最長後綴歸類、網站預覽、級聯啟停、整棵 rename/delete。
+- 完成 Nginx 式站台與 legacy route migration：Host aliases、exact／longest-prefix location、redirect、rewrite、安全 header template、等權 round-robin、被動故障冷卻及安全方法 failover。
+- 完成 request body limit、trusted proxy 與 XFF 邊界、IP allow/deny、記憶體 rate limit、`data/proxy-cache` 原子有界 LRU、Cache-Control/Vary 規則，以及 Brotli/gzip 協商。
+- 完成管理 cache status/clear API，並將 cache lifecycle、容量與 trusted CIDRs 接入 runtime 熱更新。
+- 完成 DNS 記錄與網域完整 CRUD、DNS 診斷、代理五步精靈及 Tunnel 確認的全自建 overlay/modal；無 `alert()`、`confirm()`、`prompt()` 或原生 `<dialog>`，並具焦點鎖定、Esc、焦點歸還、繁中驗證及原生微動畫。
+- 回歸結果：Node 單元／整合 74/74、Playwright 6/6、ESLint、npm audit、23 個 src JS LSP 與多尺寸視覺審查均通過；v0.1.3 build GREEN，runtime SHA-256 為 `58ee2cc4a792b6fbe1e0700faeac696af56b56c71fb1a0d45e9b67af71abfcae`。
