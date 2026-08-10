@@ -63,7 +63,14 @@ test.afterAll(async () => {
 });
 
 test.describe.serial("管理介面", () => {
-  test("首次設密後可管理 DNS、代理、Tunnel 與主題", async ({ page }) => {
+  async function login(page) {
+    await page.goto(baseUrl);
+    await page.getByLabel("密碼").fill(password);
+    await page.getByRole("button", { name: "登入" }).click();
+    await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+  }
+
+  test("首次設密後顯示完整健康摘要", async ({ page }) => {
     await page.goto(baseUrl);
     await expect(page.getByRole("heading", { name: "設定管理員" })).toBeVisible();
     await page.getByLabel("Setup token").fill(setupToken);
@@ -75,9 +82,17 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByRole("button", { name: "系統總覽" })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#recent-events").getByText("管理員設定完成", { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "DNS 記錄" }).click();
-    await expect(page.getByRole("button", { name: "DNS 記錄" })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByText("Cloudflare", { exact: true })).toBeVisible();
+    await expect(page.getByText("Google", { exact: true })).toBeVisible();
+  });
+
+  test("DNS 與網域工作區提供完整 CRUD、自建 modal 與診斷", async ({ page }) => {
+    await login(page);
+    await expect(page.locator("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    await expect(page.getByRole("button", { name: "DNS 與網域" })).toHaveAttribute("aria-current", "page");
     await page.getByRole("button", { name: "新增記錄" }).click();
+    await expect(page.getByRole("dialog", { name: "新增 DNS 記錄" })).toBeVisible();
     await page.getByLabel("記錄名稱").fill("home.test");
     await page.getByLabel("記錄值").fill("192.0.2.88");
     await page.route("**/api/config", async (route) => {
@@ -91,12 +106,120 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByText("home.test", { exact: true })).toBeVisible();
     await page.unroute("**/api/config");
 
-    await page.getByRole("button", { name: "代理路由" }).click();
-    await page.getByRole("button", { name: "新增路由" }).click();
-    await page.getByLabel("公開主機名").fill("app.test");
-    await page.getByLabel("目標 URL").fill("http://192.0.2.88:9000");
-    await page.getByRole("button", { name: "儲存路由" }).click();
+    await page.getByLabel("診斷名稱").fill("home.test");
+    await page.getByLabel("診斷類型").selectOption("A");
+    await page.getByRole("button", { name: "執行 DNS 診斷" }).click();
+    await expect(page.getByTestId("diagnostic-rcode")).toHaveText("NOERROR");
+    await expect(page.getByTestId("diagnostic-answers")).toContainText("192.0.2.88");
+
+    await page.getByRole("button", { name: "編輯 DNS 記錄 home.test" }).click();
+    await expect(page.getByRole("dialog", { name: "編輯 DNS 記錄" })).toBeVisible();
+    await page.getByLabel("記錄名稱").fill("edited.test");
+    await page.getByLabel("TTL").fill("900");
+    await page.getByLabel("啟用記錄").uncheck();
+    await page.getByRole("button", { name: "儲存記錄" }).click();
+    await expect(page.getByText("edited.test", { exact: true })).toBeVisible();
+    await expect(page.getByText("已停用", { exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    await expect(page.getByText("edited.test", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "刪除 DNS 記錄 edited.test" }).click();
+    const recordConfirm = page.getByRole("dialog", { name: "刪除 DNS 記錄" });
+    await expect(recordConfirm).toContainText("edited.test");
+    await expect(recordConfirm).toContainText("192.0.2.88");
+    await recordConfirm.getByRole("button", { name: "確認刪除" }).click();
+    await expect(page.getByText("edited.test", { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "新增網域" }).click();
+    await expect(page.getByRole("dialog", { name: "新增網域工作區" })).toBeVisible();
+    await page.getByLabel("網域名稱").fill("site.example");
+    await page.getByLabel("建立模式").selectOption("website");
+    await page.getByLabel("IPv4 位址").fill("192.0.2.70");
+    await page.getByLabel("建立 www CNAME").check();
+    await page.getByLabel("內部 upstream URL").fill("http://127.0.0.1:3000");
+    await page.getByRole("button", { name: "預覽變更" }).click();
+    await expect(page.getByTestId("domain-preview")).toContainText("www.site.example");
+    await page.getByRole("button", { name: "建立網域" }).click();
+    await expect(page.getByRole("button", { name: "編輯網域 site.example" })).toBeVisible();
+    await expect(page.locator("#records-list").getByText("www.site.example", { exact: true })).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: "test-results/admin-dns-domains.png", fullPage: true });
+
+    await page.getByRole("button", { name: "編輯網域 site.example" }).click();
+    await page.getByLabel("網域名稱").fill("renamed.example");
+    await page.getByLabel("啟用網域").uncheck();
+    await page.getByRole("button", { name: "儲存網域" }).click();
+    await expect(page.getByRole("button", { name: "編輯網域 renamed.example" })).toBeVisible();
+    await page.getByRole("button", { name: "刪除網域 renamed.example" }).click();
+    const domainConfirm = page.getByRole("dialog", { name: "刪除網域工作區" });
+    await expect(domainConfirm).toContainText("DNS 記錄 2 筆");
+    await expect(domainConfirm).toContainText("代理站台 1 個");
+    await domainConfirm.getByRole("button", { name: "刪除整個網域" }).click();
+    await expect(page.getByText("renamed.example", { exact: true })).toHaveCount(0);
+  });
+
+  test("代理站台可透過五步精靈建立、編輯、複製、停用及刪除", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "代理站台" }).click();
+    await page.getByRole("button", { name: "新增代理站台" }).click();
+    const wizard = page.getByRole("dialog", { name: "新增代理站台" });
+    await expect(wizard.getByText("步驟 1 / 5", { exact: true })).toBeVisible();
+    await page.getByLabel("主要 Host").fill("app.test");
+    await page.getByRole("button", { name: "下一步" }).click();
+    await expect(wizard.getByText("步驟 2 / 5", { exact: true })).toBeVisible();
+    await page.getByLabel("路徑", { exact: true }).fill("/");
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByLabel("上游 URL（每行一個）").fill("http://192.0.2.88:9000\nhttp://192.0.2.89:9000");
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByLabel("Body 限制（MiB）").fill("12");
+    await page.getByLabel("啟用代理快取").check();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await expect(wizard.getByText("步驟 5 / 5", { exact: true })).toBeVisible();
+    await expect(wizard.getByTestId("proxy-review")).toContainText("app.test");
+    await page.screenshot({ path: "test-results/admin-proxy-wizard.png", fullPage: true });
+    await page.getByRole("button", { name: "建立站台" }).click();
     await expect(page.getByText("app.test", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "編輯代理站台 app.test" }).click();
+    await page.getByLabel("主要 Host").fill("edited.app.test");
+    await page.getByLabel("啟用站台").uncheck();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "儲存站台" }).click();
+    await expect(page.getByText("edited.app.test", { exact: true })).toBeVisible();
+    await expect(page.getByText("已停用", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "複製代理站台 edited.app.test" }).click();
+    await page.getByLabel("主要 Host").fill("copy.app.test");
+    await page.getByLabel("啟用站台").check();
+    for (let step = 0; step < 4; step += 1) await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "建立副本" }).click();
+    await expect(page.getByText("copy.app.test", { exact: true })).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: "test-results/admin-proxy-sites.png", fullPage: true });
+    await page.reload();
+    await page.getByRole("button", { name: "代理站台" }).click();
+    await expect(page.getByText("copy.app.test", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "清除所有代理快取" }).click();
+    await page.getByRole("dialog", { name: "清除代理快取" }).getByRole("button", { name: "確認清除" }).click();
+    await expect(page.getByText("代理快取已清除", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "刪除代理站台 edited.app.test" }).click();
+    await page.getByRole("dialog", { name: "刪除代理站台" }).getByRole("button", { name: "確認刪除" }).click();
+    await expect(page.getByText("edited.app.test", { exact: true })).toHaveCount(0);
+  });
+
+  test("Tunnel 確認與主題切換不使用瀏覽器原生對話框", async ({ page }) => {
+    await login(page);
+    await page.evaluate(() => {
+      window.confirm = () => { throw new Error("native confirm must not be called"); };
+      window.alert = () => { throw new Error("native alert must not be called"); };
+      window.prompt = () => { throw new Error("native prompt must not be called"); };
+    });
 
     await page.getByRole("button", { name: "Cloudflare Tunnel" }).click();
     await expect(page.getByText("Token 來源：設定檔", { exact: true })).toBeVisible();
@@ -108,11 +231,12 @@ test.describe.serial("管理介面", () => {
 
     await page.getByLabel("Cloudflare Tunnel token").fill("ui-replacement-token");
     await page.getByRole("button", { name: "儲存 Token", exact: true }).click();
+    await expect(page.getByLabel("Cloudflare Tunnel token")).toHaveValue("");
     await expect(page.getByText("運行中", { exact: true })).toBeVisible();
     expect(runtime.config.get().tunnel.token).toBe("ui-replacement-token");
 
-    page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "清除已儲存 Token" }).click();
+    await page.getByRole("dialog", { name: "清除 Tunnel Token" }).getByRole("button", { name: "確認清除" }).click();
     await expect(page.getByText("尚未設定 Token", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "啟動 Tunnel" })).toBeDisabled();
     expect(runtime.config.get().tunnel.token).toBe("");
@@ -128,10 +252,7 @@ test.describe.serial("管理介面", () => {
 
   test("已設定管理員可在手機登入且頁面不水平溢位", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.goto(baseUrl);
-    await page.getByLabel("密碼").fill(password);
-    await page.getByRole("button", { name: "登入" }).click();
-    await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+    await login(page);
     await expect(page.getByRole("button", { name: "切換主題" })).toBeVisible();
     await expect(page.getByRole("button", { name: "登出" })).toBeVisible();
     await expect(page.getByRole("button", { name: "系統總覽" })).toHaveAttribute("aria-current", "page");
@@ -140,13 +261,12 @@ test.describe.serial("管理介面", () => {
     const navigationOverflow = await page.locator(".sidebar nav").evaluate((navigation) => navigation.scrollWidth - navigation.clientWidth);
     expect(navigationOverflow).toBeLessThanOrEqual(0);
     await page.screenshot({ path: "test-results/admin-mobile.png", fullPage: true });
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    await page.screenshot({ path: "test-results/admin-mobile-dns.png", fullPage: true });
   });
 
   test("各驗收寬度皆可完整操作且不水平溢位", async ({ page }) => {
-    await page.goto(baseUrl);
-    await page.getByLabel("密碼").fill(password);
-    await page.getByRole("button", { name: "登入" }).click();
-    await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
+    await login(page);
 
     await page.reload();
     await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
@@ -154,6 +274,30 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByRole("link", { name: "跳至主要內容" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.locator("#main-content")).toBeFocused();
+
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    const addDomain = page.getByRole("button", { name: "新增網域" });
+    await addDomain.click();
+    const modal = page.getByRole("dialog", { name: "新增網域工作區" });
+    await expect(modal.getByLabel("網域名稱")).toBeFocused();
+    await modal.getByRole("button", { name: "關閉" }).focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(modal.getByRole("button", { name: "建立網域" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(modal).toBeHidden();
+    await expect(addDomain).toBeFocused();
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.evaluate(() => {
+      window.__animationCalls = 0;
+      const originalAnimate = Element.prototype.animate;
+      Element.prototype.animate = function (...args) {
+        window.__animationCalls += 1;
+        return originalAnimate.apply(this, args);
+      };
+    });
+    await page.getByRole("button", { name: "代理站台" }).click();
+    expect(await page.evaluate(() => window.__animationCalls)).toBe(0);
 
     for (const width of [375, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: width < 900 ? 812 : 900 });

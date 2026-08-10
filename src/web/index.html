@@ -18,50 +18,36 @@
     <symbol id="icon-theme" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
     <symbol id="icon-logout" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></symbol>
+    <symbol id="icon-delete" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/></symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect width="13" height="13" x="8" y="8" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
   </svg>
   <a class="skip-link" href="#main-content">跳至主要內容</a>
-  <div id="loading" class="loading-screen" role="status" aria-live="polite">
-    <span class="spinner" aria-hidden="true"></span>
-    <span>正在連線至控制台</span>
-  </div>
+  <div id="loading" class="loading-screen" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>正在連線至控制台</span></div>
 
   <main id="auth-view" class="auth-layout" hidden>
     <section class="auth-panel" aria-labelledby="auth-title">
-      <div class="brand-mark" aria-hidden="true">S12</div>
-      <p class="eyebrow">S12 DNS SERVER</p>
-      <h1 id="auth-title">登入管理介面</h1>
-      <p id="auth-copy" class="muted">使用管理員密碼繼續。</p>
-      <form id="auth-form">
-        <label id="token-field" hidden>Setup token
-          <input id="setup-token" name="token" autocomplete="one-time-code">
-        </label>
-        <label><span id="password-label">密碼</span>
-          <input id="password" name="password" type="password" minlength="12" autocomplete="current-password" required>
-        </label>
+      <div class="brand-mark" aria-hidden="true">S12</div><p class="eyebrow">S12 DNS SERVER</p>
+      <h1 id="auth-title">登入管理介面</h1><p id="auth-copy" class="muted">使用管理員密碼繼續。</p>
+      <form id="auth-form" novalidate>
+        <label id="token-field" hidden>Setup token<input id="setup-token" name="token" autocomplete="one-time-code"></label>
+        <label><span id="password-label">密碼</span><input id="password" name="password" type="password" autocomplete="current-password"></label>
         <p id="auth-error" class="form-message error" role="alert" hidden></p>
         <button id="auth-submit" class="primary wide" type="submit">登入</button>
       </form>
     </section>
-    <aside class="auth-aside" aria-label="服務資訊">
-      <p class="eyebrow">SELF-HOSTED NETWORK EDGE</p>
-      <h2>解析、轉送與發布，都在一個控制面。</h2>
-      <dl class="auth-facts">
-        <div><dt>DNS</dt><dd>UDP / TCP</dd></div>
-        <div><dt>DoH</dt><dd>RFC 8484</dd></div>
-        <div><dt>Proxy</dt><dd>HTTP / WebSocket</dd></div>
-      </dl>
-    </aside>
+    <aside class="auth-aside" aria-label="服務資訊"><p class="eyebrow">SELF-HOSTED NETWORK EDGE</p><h2>解析、轉送與發布，都在一個控制面。</h2><dl class="auth-facts"><div><dt>DNS</dt><dd>UDP / TCP</dd></div><div><dt>DoH</dt><dd>RFC 8484</dd></div><div><dt>Proxy</dt><dd>HTTP / WebSocket</dd></div></dl></aside>
   </main>
 
   <div id="app-view" class="app-shell" hidden>
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark small" aria-hidden="true">S12</span><span>S12 DNS</span></div>
       <nav aria-label="主要導覽">
-        <button class="nav-button active" data-view="overview" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#icon-dashboard"/></svg><span class="nav-label">系統總覽</span></button>
-        <button class="nav-button" data-view="records"><svg class="icon" aria-hidden="true"><use href="#icon-database"/></svg><span class="nav-label">DNS 記錄</span></button>
-        <button class="nav-button" data-view="routes"><svg class="icon" aria-hidden="true"><use href="#icon-route"/></svg><span class="nav-label">代理路由</span></button>
-        <button class="nav-button" data-view="tunnel" aria-label="Cloudflare Tunnel"><svg class="icon" aria-hidden="true"><use href="#icon-cloud"/></svg><span class="nav-label">Tunnel</span></button>
-        <button class="nav-button" data-view="events"><svg class="icon" aria-hidden="true"><use href="#icon-events"/></svg><span class="nav-label">事件日誌</span></button>
+        <button class="nav-button active" type="button" data-view="overview" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#icon-dashboard"/></svg><span class="nav-label">系統總覽</span></button>
+        <button class="nav-button" type="button" data-view="records"><svg class="icon" aria-hidden="true"><use href="#icon-database"/></svg><span class="nav-label">DNS 與網域</span></button>
+        <button class="nav-button" type="button" data-view="routes"><svg class="icon" aria-hidden="true"><use href="#icon-route"/></svg><span class="nav-label">代理站台</span></button>
+        <button class="nav-button" type="button" data-view="tunnel" aria-label="Cloudflare Tunnel"><svg class="icon" aria-hidden="true"><use href="#icon-cloud"/></svg><span class="nav-label">Tunnel</span></button>
+        <button class="nav-button" type="button" data-view="events"><svg class="icon" aria-hidden="true"><use href="#icon-events"/></svg><span class="nav-label">事件日誌</span></button>
       </nav>
       <p class="sidebar-footnote">LOCAL CONTROL PLANE</p>
     </aside>
@@ -69,101 +55,46 @@
     <main id="main-content" class="workspace" tabindex="-1">
       <header class="topbar">
         <div><p class="eyebrow">CONTROL PLANE</p><h1 id="page-title">系統總覽</h1></div>
-        <div class="topbar-meta">
-          <span id="connection-state" class="status-badge success" role="status"><span class="dot online" aria-hidden="true"></span><span class="connection-copy">服務已連線</span></span>
-          <div class="topbar-actions">
-            <button id="theme-toggle" class="icon-button utility-button" type="button" aria-label="切換主題" title="切換主題"><svg class="icon" aria-hidden="true"><use href="#icon-theme"/></svg></button>
-            <button id="logout" class="icon-button utility-button" type="button" aria-label="登出" title="登出"><svg class="icon" aria-hidden="true"><use href="#icon-logout"/></svg></button>
-          </div>
-        </div>
+        <div class="topbar-meta"><span id="connection-state" class="status-badge success" role="status"><span class="dot online" aria-hidden="true"></span><span class="connection-copy">服務已連線</span></span><div class="topbar-actions"><button id="theme-toggle" class="icon-button utility-button" type="button" aria-label="切換主題" title="切換主題"><svg class="icon" aria-hidden="true"><use href="#icon-theme"/></svg></button><button id="logout" class="icon-button utility-button" type="button" aria-label="登出" title="登出"><svg class="icon" aria-hidden="true"><use href="#icon-logout"/></svg></button></div></div>
       </header>
 
       <section id="view-overview" class="view" aria-labelledby="page-title">
-        <section class="health-summary" aria-labelledby="health-heading">
-          <div class="health-copy">
-            <span id="health-symbol" class="health-symbol" aria-hidden="true"><span class="dot online"></span></span>
-            <div><p class="eyebrow">OPERATION STATUS</p><h2 id="health-heading">正在檢查核心服務</h2><p id="health-detail" class="muted">正在整理服務與上游狀態。</p></div>
-          </div>
-          <dl class="health-stats">
-            <div><dt>服務就緒</dt><dd data-testid="service-readiness">0 / 0</dd></div>
-            <div><dt>DNS 記錄</dt><dd id="record-count">0</dd></div>
-            <div><dt>代理路由</dt><dd id="route-count">0</dd></div>
-            <div><dt>快取項目</dt><dd id="cache-count">0</dd></div>
-          </dl>
-        </section>
-        <div class="subsection-heading"><div><p class="eyebrow">LISTENERS</p><h2>服務端點</h2></div></div>
-        <div id="service-grid" class="metric-grid"></div>
-        <div class="content-grid">
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">RESOLVERS</p><h2>上游健康</h2></div></div><div id="upstream-list" class="list"></div></section>
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>近期事件</h2></div></div><div id="recent-events" class="list"></div></section>
-        </div>
+        <section class="health-summary" aria-labelledby="health-heading"><div class="health-copy"><span id="health-symbol" class="health-symbol" aria-hidden="true"><span class="dot online"></span></span><div><p class="eyebrow">OPERATION STATUS</p><h2 id="health-heading">正在檢查核心服務</h2><p id="health-detail" class="muted">正在整理服務與上游狀態。</p></div></div><dl class="health-stats"><div><dt>服務就緒</dt><dd data-testid="service-readiness">0 / 0</dd></div><div><dt>DNS 記錄</dt><dd id="record-count">0</dd></div><div><dt>代理站台</dt><dd id="route-count">0</dd></div><div><dt>DNS 快取</dt><dd id="cache-count">0</dd></div></dl></section>
+        <div class="subsection-heading"><p class="eyebrow">LISTENERS</p><h2>服務端點</h2></div><div id="service-grid" class="metric-grid"></div>
+        <div class="content-grid"><section class="panel"><div class="section-heading"><div><p class="eyebrow">RESOLVERS</p><h2>上游健康</h2></div></div><div id="upstream-list" class="list"></div></section><section class="panel"><div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>近期事件</h2></div></div><div id="recent-events" class="list"></div></section></div>
       </section>
 
       <section id="view-records" class="view" hidden>
-        <div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><div class="title-row"><h2>自訂 DNS 記錄</h2><span id="records-summary" class="count-badge">0 筆</span></div><p class="muted">精確名稱優先於萬用字元。</p></div><button id="add-record" class="primary" type="button">新增記錄</button></div>
-        <div id="records-list" class="data-list"></div>
+        <div class="section-heading"><div><p class="eyebrow">DNS WORKSPACES</p><div class="title-row"><h2>DNS 與自訂網域</h2><span id="records-summary" class="count-badge">0 筆</span></div><p class="muted">以網域工作區集中管理記錄、代理與診斷。</p></div><div class="button-row compact"><button id="add-domain" class="secondary" type="button">新增網域</button><button id="add-record" class="primary" type="button">新增記錄</button></div></div>
+        <div class="dns-workspace-grid">
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">DOMAINS</p><h3>網域工作區</h3></div></div><div id="domains-list" class="domain-list"></div></section>
+          <section class="panel"><div class="section-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>DNS 診斷</h3></div></div><form id="diagnostic-form" class="diagnostic-form" novalidate><label>診斷名稱<input name="name" autocomplete="off" placeholder="home.example.com"></label><label>診斷類型<select name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label><button class="primary" type="submit">執行 DNS 診斷</button><p class="form-message error" role="alert" hidden></p></form><div id="diagnostic-result" class="diagnostic-result" hidden><div><span>RCODE</span><strong data-testid="diagnostic-rcode"></strong></div><div><span>來源</span><strong data-testid="diagnostic-sources"></strong></div><pre data-testid="diagnostic-answers"></pre></div></section>
+        </div>
+        <section class="panel records-panel"><div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><h3>DNS 記錄</h3></div><label class="scope-picker">顯示範圍<select id="record-scope"><option value="all">全部記錄</option><option value="unassigned">未分組記錄</option></select></label></div><div id="records-list" class="data-list"></div></section>
       </section>
 
       <section id="view-routes" class="view" hidden>
-        <div class="section-heading"><div><p class="eyebrow">HOST ROUTING</p><div class="title-row"><h2>反向代理路由</h2><span id="routes-summary" class="count-badge">0 條</span></div><p class="muted">只有明確建立的 Host 才會公開。</p></div><button id="add-route" class="primary" type="button">新增路由</button></div>
+        <div class="section-heading"><div><p class="eyebrow">NGINX-STYLE ROUTING</p><div class="title-row"><h2>代理站台</h2><span id="routes-summary" class="count-badge">0 個</span></div><p class="muted">依 Host 與路徑選擇 upstream，支援安全規則、快取與壓縮。</p></div><button id="add-route" class="primary" type="button">新增代理站台</button></div>
+        <section class="cache-strip"><div><span>磁碟代理快取</span><strong id="proxy-cache-status">0 B · 0 項</strong></div><button id="clear-proxy-cache" class="secondary" type="button">清除所有代理快取</button></section>
         <div id="routes-list" class="data-list"></div>
       </section>
 
       <section id="view-tunnel" class="view" hidden>
         <div class="section-heading"><div><p class="eyebrow">PUBLIC EDGE</p><h2>Cloudflare Tunnel</h2></div></div>
-        <div class="tunnel-layout">
-          <section class="panel tunnel-state">
-            <span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p>
-            <div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div>
-          </section>
-          <section class="panel tunnel-token-panel" aria-labelledby="tunnel-token-title">
-            <p class="eyebrow">CREDENTIAL</p><h3 id="tunnel-token-title">Token 設定</h3>
-            <strong id="tunnel-token-source" class="credential-status">尚未設定 Token</strong>
-            <p id="tunnel-token-note" class="muted"></p>
-            <form id="tunnel-token-form" class="tunnel-token-form">
-              <label>Cloudflare Tunnel token
-                <input id="tunnel-token" name="token" type="password" autocomplete="new-password" spellcheck="false">
-              </label>
-              <div class="button-row">
-                <button id="tunnel-token-save" class="primary" type="submit">儲存 Token</button>
-                <button id="tunnel-token-clear" class="danger-button" type="button">清除已儲存 Token</button>
-              </div>
-            </form>
-          </section>
-          <section class="panel tunnel-logs-panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section>
-        </div>
+        <div class="tunnel-layout"><section class="panel tunnel-state"><span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p><div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div></section><section class="panel tunnel-token-panel" aria-labelledby="tunnel-token-title"><p class="eyebrow">CREDENTIAL</p><h3 id="tunnel-token-title">Token 設定</h3><strong id="tunnel-token-source" class="credential-status">尚未設定 Token</strong><p id="tunnel-token-note" class="muted"></p><form id="tunnel-token-form" class="tunnel-token-form" novalidate><label>Cloudflare Tunnel token<input id="tunnel-token" name="token" type="password" autocomplete="new-password" spellcheck="false"></label><div class="button-row"><button id="tunnel-token-save" class="primary" type="submit">儲存 Token</button><button id="tunnel-token-clear" class="danger-button" type="button">清除已儲存 Token</button></div></form></section><section class="panel tunnel-logs-panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section></div>
       </section>
 
-      <section id="view-events" class="view" hidden>
-        <div class="section-heading"><div><p class="eyebrow">MEMORY ONLY</p><div class="title-row"><h2>事件日誌</h2><span id="events-summary" class="count-badge">0 筆</span></div><p class="muted">最多保留最近 500 筆，重新啟動後清除。</p></div><button id="refresh-events" class="secondary" type="button">重新整理</button></div>
-        <div id="events-list" class="data-list"></div>
-      </section>
+      <section id="view-events" class="view" hidden><div class="section-heading"><div><p class="eyebrow">MEMORY ONLY</p><div class="title-row"><h2>事件日誌</h2><span id="events-summary" class="count-badge">0 筆</span></div><p class="muted">最多保留最近 500 筆，重新啟動後清除。</p></div><button id="refresh-events" class="secondary" type="button">重新整理</button></div><div id="events-list" class="data-list"></div></section>
     </main>
   </div>
 
-  <dialog id="record-dialog" aria-labelledby="record-dialog-title">
-    <form id="record-form" class="dialog-form" method="dialog">
-      <div class="dialog-heading"><h2 id="record-dialog-title">新增 DNS 記錄</h2><button class="icon-button" value="cancel" aria-label="關閉" formnovalidate><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div>
-      <div class="form-grid">
-        <label>記錄名稱<input name="name" placeholder="home.example.com" required></label>
-        <label>類型<select id="record-type" name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label>
-        <label class="full">記錄值<input id="record-value" name="value" placeholder="192.0.2.10" aria-describedby="record-value-help" required><small id="record-value-help">輸入 IPv4 位址，例如 192.0.2.10。</small></label>
-        <label>TTL<input name="ttl" type="number" inputmode="numeric" min="0" value="300" required></label>
-      </div>
-      <p class="dialog-error form-message error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="secondary" value="cancel" formnovalidate>取消</button><button class="primary" value="default">儲存記錄</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="route-dialog" aria-labelledby="route-dialog-title">
-    <form id="route-form" class="dialog-form" method="dialog">
-      <div class="dialog-heading"><h2 id="route-dialog-title">新增代理路由</h2><button class="icon-button" value="cancel" aria-label="關閉" formnovalidate><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div>
-      <div class="form-grid"><label>公開主機名<input name="host" placeholder="app.example.com" autocomplete="off" required></label><label class="full">目標 URL<input name="target" type="url" inputmode="url" placeholder="http://192.0.2.10:8080" aria-describedby="route-target-help" required><small id="route-target-help">需包含 http:// 或 https://，路徑與埠號可省略。</small></label></div>
-      <p class="dialog-error form-message error" role="alert" hidden></p>
-      <div class="dialog-actions"><button class="secondary" value="cancel" formnovalidate>取消</button><button class="primary" value="default">儲存路由</button></div>
-    </form>
-  </dialog>
-
+  <div id="modal-layer" class="modal-layer" aria-hidden="true" hidden>
+    <div class="modal-backdrop" data-modal-dismiss></div>
+    <section id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <header class="modal-heading"><div><p id="modal-eyebrow" class="eyebrow">CONTROL</p><h2 id="modal-title"></h2></div><button id="modal-close" class="icon-button" type="button" aria-label="關閉"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+      <div id="modal-body" class="modal-body"></div>
+    </section>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 </body>
 </html>
