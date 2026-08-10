@@ -45,3 +45,6 @@
 - 完成管理 cache status/clear API，並將 cache lifecycle、容量與 trusted CIDRs 接入 runtime 熱更新。
 - 完成 DNS 記錄與網域完整 CRUD、DNS 診斷、代理五步精靈及 Tunnel 確認的全自建 overlay/modal；無 `alert()`、`confirm()`、`prompt()` 或原生 `<dialog>`，並具焦點鎖定、Esc、焦點歸還、繁中驗證及原生微動畫。
 - 回歸結果：Node 單元／整合 74/74、Playwright 6/6、ESLint、npm audit、23 個 src JS LSP 與多尺寸視覺審查均通過；v0.1.3 build GREEN，runtime SHA-256 為 `58ee2cc4a792b6fbe1e0700faeac696af56b56c71fb1a0d45e9b67af71abfcae`。
+- 推送 16 個需求、核心、代理、UI、版本與文件原子提交，建立 `v0.1.3` tag；GitHub Actions run `31406869072` 的 Node 20/22/24、Playwright 與 Release jobs 全部成功。
+- `v0.1.3` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；GitHub runtime asset digest 為 `58ee2cc4a792b6fbe1e0700faeac696af56b56c71fb1a0d45e9b67af71abfcae`，與本機 build 相符。
+- 全新暫存目錄初始只下載 Release `index.js`，冷啟動後管理 API 回應 HTTP 200，active cache 為 `runtime-0.1.3.cjs`，重新計算 SHA-256 與 manifest／Release 相符；程序與暫存目錄已清理。

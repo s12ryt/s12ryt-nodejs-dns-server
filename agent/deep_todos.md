@@ -48,4 +48,4 @@
 - [x] 完成 body 上限、可信代理、IP ACL、記憶體限流、持久有界 cache、Brotli／gzip 與管理清除 API。
 - [x] 完成 DNS／網域／代理 UI CRUD、五步代理精靈、全自建 modal、自訂驗證、焦點鎖定及 reduced-motion。
 - [x] 完成 74 項單元／整合測試、6 項 E2E、lint、audit、LSP、視覺與 v0.1.3 build 驗證。
-- [ ] 發布並驗證 v0.1.3 Release、GitHub CI 與單檔冷啟動。
+- [x] 發布並驗證 v0.1.3 Release、GitHub CI 與單檔冷啟動；runtime SHA-256 為 `58ee2cc4a792b6fbe1e0700faeac696af56b56c71fb1a0d45e9b67af71abfcae`。
