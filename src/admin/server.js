@@ -5,9 +5,12 @@ const http = require("node:http");
 const path = require("node:path");
 
 const { EventLog } = require("./event-log");
+const { createDomainPlan, deleteDomainTree, updateDomain } = require("./domains");
+const { normalizeHost } = require("../services/proxy-routes");
 
 const COOKIE_NAME = "s12_session";
 const MAX_JSON_BODY = 1024 * 1024;
+const DIAGNOSTIC_TYPES = new Set(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]);
 
 function parseCookies(header) {
   return Object.fromEntries(String(header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
@@ -83,6 +86,8 @@ function createAdminService({
   tunnel,
   updateTunnelToken,
   clearTunnelToken,
+  diagnoseDns,
+  clearProxyCache,
   events = new EventLog(),
   status = () => ({}),
   staticDirectory = path.join(__dirname, "..", "web"),
@@ -161,6 +166,80 @@ function createAdminService({
       sendJson(response, 200, status());
     } else if (request.method === "GET" && url.pathname === "/api/events") {
       sendJson(response, 200, events.list());
+    } else if (request.method === "DELETE" && url.pathname === "/api/proxy/cache") {
+      try {
+        if (typeof clearProxyCache !== "function") {
+          throw Object.assign(new Error("Proxy cache controls are unavailable"), { statusCode: 501 });
+        }
+        const body = await readJsonBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          throw Object.assign(new Error("Proxy cache scope must be an object"), { statusCode: 400 });
+        }
+        const scope = {};
+        if ("site" in body) {
+          if (typeof body.site !== "string" || !body.site.trim()) {
+            throw Object.assign(new Error("Proxy cache site is invalid"), { statusCode: 400 });
+          }
+          scope.site = normalizeHost(body.site);
+        }
+        if ("location" in body) {
+          if (typeof body.location !== "string" || !body.location.startsWith("/")) {
+            throw Object.assign(new Error("Proxy cache location is invalid"), { statusCode: 400 });
+          }
+          scope.location = body.location;
+        }
+        const result = await clearProxyCache(scope);
+        events.add({ kind: "proxy-cache", message: scope.site ? `Proxy cache cleared: ${scope.site}` : "Proxy cache cleared" });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/dns/diagnose") {
+      try {
+        if (typeof diagnoseDns !== "function") {
+          throw Object.assign(new Error("DNS diagnostics are unavailable"), { statusCode: 501 });
+        }
+        const body = await readJsonBody(request);
+        const name = String(body.name || "").trim().replace(/\.$/, "").toLowerCase();
+        const type = String(body.type || "").toUpperCase();
+        if (!name) throw Object.assign(new Error("DNS name is required"), { statusCode: 400 });
+        if (!DIAGNOSTIC_TYPES.has(type)) {
+          throw Object.assign(new Error("Unsupported diagnostic DNS type"), { statusCode: 400 });
+        }
+        sendJson(response, 200, await diagnoseDns(name, type));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/domains/preview") {
+      try {
+        const body = await readJsonBody(request);
+        sendJson(response, 200, { additions: createDomainPlan(config.get(), body).additions });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/domains") {
+      try {
+        const body = await readJsonBody(request);
+        const plan = createDomainPlan(config.get(), body);
+        const updated = await config.update(plan.config);
+        events.add({ kind: "config", message: `Domain workspace created: ${plan.additions.domain.name}` });
+        sendJson(response, 201, publicConfig(updated));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (["PUT", "DELETE"].includes(request.method) && url.pathname.startsWith("/api/domains/")) {
+      try {
+        const domainName = decodeURIComponent(url.pathname.slice("/api/domains/".length));
+        if (!domainName) throw Object.assign(new Error("Domain name is required"), { statusCode: 400 });
+        const next = request.method === "PUT"
+          ? updateDomain(config.get(), domainName, await readJsonBody(request))
+          : deleteDomainTree(config.get(), domainName);
+        const updated = await config.update(next);
+        events.add({ kind: "config", message: `Domain workspace ${request.method === "PUT" ? "updated" : "deleted"}: ${domainName}` });
+        sendJson(response, 200, publicConfig(updated));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
     } else if (request.method === "GET" && url.pathname === "/api/tunnel") {
       sendJson(response, 200, tunnel.status());
     } else if (request.method === "PUT" && url.pathname === "/api/tunnel/token") {
@@ -244,4 +323,12 @@ function createAdminService({
   };
 }
 
-module.exports = { COOKIE_NAME, createAdminService, parseCookies, publicConfig, readJsonBody, sessionCookie };
+module.exports = {
+  COOKIE_NAME,
+  DIAGNOSTIC_TYPES,
+  createAdminService,
+  parseCookies,
+  publicConfig,
+  readJsonBody,
+  sessionCookie,
+};

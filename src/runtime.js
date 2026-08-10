@@ -4,15 +4,18 @@ const path = require("node:path");
 
 const { AuthManager } = require("./admin/auth-manager");
 const { ConfigStore } = require("./admin/config-store");
+const { applyDomainState } = require("./admin/domains");
 const { EventLog } = require("./admin/event-log");
 const { createAdminService } = require("./admin/server");
 const { DnsCache } = require("./dns/cache");
 const { RecordStore } = require("./dns/records");
 const { createResolver } = require("./dns/resolver");
 const { createDohUpstream } = require("./dns/upstream-doh");
+const { createUpstreamHealthMonitor } = require("./dns/upstream-health");
 const { createDnsService } = require("./services/dns-server");
 const { createDohService } = require("./services/doh-server");
 const { createProxyService } = require("./services/proxy-server");
+const { ProxyCache } = require("./services/proxy-cache");
 const { ProxyRoutes } = require("./services/proxy-routes");
 const { ensureCloudflared } = require("./tunnel/download");
 const { TunnelManager } = require("./tunnel/manager");
@@ -39,6 +42,8 @@ function createRuntime({
   environment = process.env,
   tunnel: providedTunnel,
   serviceFactories = {},
+  healthMonitorFactory = createUpstreamHealthMonitor,
+  proxyCacheFactory = (options) => new ProxyCache(options),
 } = {}) {
   const config = new ConfigStore({ directory });
   const auth = new AuthManager({ directory });
@@ -143,6 +148,7 @@ function createRuntime({
         ...upstream.status(),
       })),
       cache: { entries: components.cache?.size || 0 },
+      proxyCache: components.proxyCache?.status() || null,
       tunnel: tunnel.status(),
     };
   }
@@ -164,6 +170,7 @@ function createRuntime({
     async start() {
       if (started) throw new Error("Runtime is already started");
       const current = await config.load();
+      const effective = applyDomainState(current);
       configureTunnel(current.tunnel.token);
       await auth.load();
       if (!auth.isConfigured()) {
@@ -171,10 +178,16 @@ function createRuntime({
         output(`S12 DNS Server setup token (valid for 10 minutes): ${token}`);
       }
 
-      components.records = new RecordStore(current.records);
-      components.routes = new ProxyRoutes(current.routes, { records: components.records });
+      components.records = new RecordStore(effective.records);
+      components.routes = new ProxyRoutes(effective.routes.filter((route) => route.enabled), { records: components.records });
       components.cache = new DnsCache(current.cache);
+      components.proxyCache = proxyCacheFactory({
+        directory: path.join(directory, "proxy-cache"),
+        maxBytes: current.proxy.cacheMaxBytes,
+      });
+      components.trustedProxyCidrs = [...current.proxy.trustedProxyCidrs];
       components.upstreams = current.upstreams.map(createDohUpstream);
+      components.upstreamHealth = healthMonitorFactory({ getUpstreams: () => components.upstreams });
       components.resolver = createResolver({
         records: components.records,
         upstreams: components.upstreams,
@@ -183,15 +196,24 @@ function createRuntime({
       });
 
       unsubscribe = config.subscribe((next) => {
-        components.records.replace(next.records);
-        components.routes.replace(next.routes);
+        const nextEffective = applyDomainState(next);
+        components.records.replace(nextEffective.records);
+        components.routes.replace(nextEffective.routes.filter((route) => route.enabled));
         components.upstreams.splice(0, components.upstreams.length, ...next.upstreams.map(createDohUpstream));
+        components.trustedProxyCidrs.splice(0, components.trustedProxyCidrs.length, ...next.proxy.trustedProxyCidrs);
+        if (typeof components.proxyCache.configure === "function") {
+          void components.proxyCache.configure({ maxBytes: next.proxy.cacheMaxBytes }).catch((error) => {
+            events.add({ kind: "proxy-cache-error", message: error.message });
+          });
+        }
       });
 
       services.dns = factories.dns({ resolver: components.resolver, ...current.dns });
       services.doh = factories.doh({ resolver: components.resolver, ...current.doh });
       services.proxy = factories.proxy({
         routes: components.routes,
+        cache: components.proxyCache,
+        trustedProxyCidrs: components.trustedProxyCidrs,
         onEvent: (event) => events.add(event),
         ...current.proxy,
       });
@@ -201,16 +223,21 @@ function createRuntime({
         tunnel,
         events,
         status,
+        diagnoseDns: (name, type) => components.resolver.diagnose(name, type),
         updateTunnelToken,
         clearTunnelToken,
+        clearProxyCache: (scope) => components.proxyCache.clear(scope),
         ...current.admin,
       });
 
       try {
+        await components.proxyCache.start();
         for (const name of ["dns", "doh", "proxy", "admin"]) await services[name].start();
         started = true;
+        components.upstreamHealth.start();
       } catch (error) {
         await closeServices();
+        await components.proxyCache?.close().catch(() => {});
         unsubscribe?.();
         unsubscribe = null;
         throw error;
@@ -228,7 +255,9 @@ function createRuntime({
     },
     async close() {
       if (!started) return;
+      components.upstreamHealth?.close();
       await closeServices();
+      await components.proxyCache?.close().catch(() => {});
       await tunnel.stop().catch(() => {});
       unsubscribe?.();
       unsubscribe = null;

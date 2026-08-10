@@ -53,6 +53,14 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const lifecycle = [];
   const output = [];
+  let adminOptions;
+  let proxyOptions;
+  const proxyCache = {
+    async start() { lifecycle.push("start:proxy-cache"); },
+    async close() { lifecycle.push("close:proxy-cache"); },
+    status() { return { entries: 3, bytes: 2048, maxBytes: 4096 }; },
+    async clear(scope) { lifecycle.push(`clear:proxy-cache:${scope?.site || "all"}`); return this.status(); },
+  };
   const tunnel = {
     status: () => ({ available: false, state: "stopped", logs: [] }),
     start: async () => { throw new Error("must not start without a token"); },
@@ -65,27 +73,85 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     serviceFactories: {
       dns: ({ resolver }) => ({ ...fakeService("dns", lifecycle), resolver }),
       doh: () => fakeService("doh", lifecycle),
-      proxy: ({ routes }) => ({ ...fakeService("proxy", lifecycle), routes }),
-      admin: () => fakeService("admin", lifecycle),
+      proxy: (options) => {
+        proxyOptions = options;
+        return { ...fakeService("proxy", lifecycle), routes: options.routes };
+      },
+      admin: (options) => {
+        adminOptions = options;
+        return fakeService("admin", lifecycle);
+      },
     },
+    proxyCacheFactory: () => proxyCache,
   });
 
   await runtime.start();
-  assert.deepEqual(lifecycle, ["start:dns", "start:doh", "start:proxy", "start:admin"]);
+  assert.deepEqual(lifecycle, ["start:proxy-cache", "start:dns", "start:doh", "start:proxy", "start:admin"]);
   assert.match(output.join("\n"), /setup token/i);
   assert.equal(runtime.status().services.dns.port, 1000);
+  assert.deepEqual(runtime.status().proxyCache, { entries: 3, bytes: 2048, maxBytes: 4096 });
+  assert.equal(proxyOptions.cache, proxyCache);
+  assert.deepEqual(proxyOptions.trustedProxyCidrs, ["127.0.0.1/32", "::1/128"]);
+  assert.equal(typeof adminOptions.clearProxyCache, "function");
+  await adminOptions.clearProxyCache({ site: "app.test" });
+  assert.equal(lifecycle.includes("clear:proxy-cache:app.test"), true);
 
   const updated = runtime.config.get();
   updated.records = [{ name: "live.test", type: "A", value: "192.0.2.77", ttl: 30 }];
   updated.routes = [{ host: "app.test", dnsName: "live.test", scheme: "http", port: 9000 }];
+  updated.domains = [{ name: "test", enabled: true, defaultTtl: 300, note: "runtime" }];
   await runtime.config.update(updated);
 
   const response = parseMessage(await runtime.components.resolver.resolve(createQuery("live.test", "A", { id: 42 })));
   assert.equal(response.answers[0].address, "192.0.2.77");
   assert.equal(runtime.components.routes.resolve("app.test").url.href, "http://192.0.2.77:9000/");
+  assert.equal(typeof adminOptions.diagnoseDns, "function");
+  assert.equal((await adminOptions.diagnoseDns("live.test", "A")).answers[0].address, "192.0.2.77");
+
+  const disabled = runtime.config.get();
+  disabled.domains[0].enabled = false;
+  await runtime.config.update(disabled);
+  assert.deepEqual(runtime.components.records.find("live.test", "A"), []);
+  assert.equal(runtime.components.routes.resolve("app.test"), null);
+  assert.equal(runtime.config.get().records[0].enabled, undefined);
+
+  const restored = runtime.config.get();
+  restored.domains[0].enabled = true;
+  await runtime.config.update(restored);
+  assert.equal(runtime.components.records.find("live.test", "A")[0].value, "192.0.2.77");
+  assert.equal(runtime.components.routes.resolve("app.test").url.port, "9000");
 
   await runtime.close();
-  assert.deepEqual(lifecycle.slice(-5), ["close:admin", "close:proxy", "close:doh", "close:dns", "close:tunnel"]);
+  assert.deepEqual(lifecycle.slice(-6), ["close:admin", "close:proxy", "close:doh", "close:dns", "close:proxy-cache", "close:tunnel"]);
+});
+
+test("runtime starts and closes the non-blocking upstream health monitor", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const lifecycle = [];
+  const monitor = {
+    start() { lifecycle.push("start:health"); },
+    close() { lifecycle.push("close:health"); },
+  };
+  const serviceFactories = Object.fromEntries(
+    ["dns", "doh", "proxy", "admin"].map((name) => [name, () => fakeService(name, lifecycle)]),
+  );
+  const runtime = createRuntime({
+    directory,
+    output: () => {},
+    serviceFactories,
+    healthMonitorFactory: () => monitor,
+    tunnel: {
+      status: () => ({ available: false, state: "stopped", logs: [] }),
+      stop: async () => {},
+    },
+  });
+
+  await runtime.start();
+  assert.equal(lifecycle.includes("start:health"), true);
+
+  await runtime.close();
+  assert.equal(lifecycle.includes("close:health"), true);
 });
 
 test("runtime keeps core services available when automatic Tunnel startup fails", async (t) => {
