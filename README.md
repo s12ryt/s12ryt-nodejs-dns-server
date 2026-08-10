@@ -9,7 +9,7 @@
 - 同埠 UDP/TCP DNS 與 `/dns-query` DoH GET/POST。
 - 依 Host 路由至 HTTP(S) URL，或由自訂 A/AAAA 記錄推導目標；支援 WebSocket。
 - 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
-- 響應式深淺色管理介面，以及 cloudflared 下載、校驗、啟停與日誌。
+- 響應式深淺色管理介面，提供核心服務健康摘要、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
 - 只有 `index.js` 時可下載經 SHA-256 驗證的完整 runtime；離線時改用最後有效快取或內嵌 DNS/DoH 核心。
 
 ## 完整安裝
