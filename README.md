@@ -4,12 +4,12 @@
 
 ## 功能
 
-- 自訂 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄、TTL、精確名稱與萬用名稱。
-- Cloudflare、Google DoH 依序容錯，以及有界 LRU/TTL 快取。
+- 自訂網域工作區，以及 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄的完整新增、編輯、停用與刪除流程。
+- CNAME 完整答案鏈、Cloudflare/Google DoH 依序容錯、定期上游健康探測，以及有界 LRU/TTL 快取。
 - 同埠 UDP/TCP DNS 與 `/dns-query` DoH GET/POST。
-- 依 Host 路由至 HTTP(S) URL，或由自訂 A/AAAA 記錄推導目標；支援 WebSocket。
+- 具 Host alias、path location、rewrite、header、安全限制、多上游、持久快取、壓縮與 WebSocket 的 Nginx 式反向代理。
 - 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
-- 響應式深淺色管理介面，提供核心服務健康摘要、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
+- 響應式深淺色管理介面，提供 DNS 診斷、核心服務健康摘要、全自建對話元件、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
 - 只有 `index.js` 時可下載經 SHA-256 驗證的完整 runtime；離線時改用最後有效快取或內嵌 DNS/DoH 核心。
 
 ## 完整安裝
@@ -30,7 +30,7 @@ npm start
 | 反向代理 | `http://0.0.0.0:8080` |
 | 管理 UI/API | `http://0.0.0.0:8081` |
 
-設定會原子寫入 `data/config.json`。可從管理介面修改服務位址、快取、上游、DNS 記錄及代理路由。
+設定會原子寫入 `data/config.json`。可從管理介面修改服務位址、快取、上游、網域、DNS 記錄及代理站台。
 
 ## 單檔啟動
 
@@ -71,12 +71,25 @@ node index.js
 
 設定檔 token 是本機明文機密。請限制 `data/config.json` 的檔案權限、備份範圍及面板檔案瀏覽權限；能使用環境變數時仍應優先使用環境變數。
 
-## 代理路由
+## DNS 與網域管理
 
-代理不會因 DNS 記錄存在而自動公開。每個 Host 必須明確建立 route，可使用：
+網域工作區不會修改註冊商、NS 或 Cloudflare DNS。它用來在 S12 內集中管理網域、相對名稱、DNS 記錄與所屬代理站台：
 
-- 完整 target：`http://127.0.0.1:3000` 或 `https://service.internal`。
-- DNS 派生：指定 `dnsName`、`scheme` 及 `port`，目標 IP 由自訂 A/AAAA 記錄取得。
+- 名稱可使用 `@`、`www`、`*`、`_service._tcp` 或工作區內的完整 FQDN。
+- 子網域依最長後綴歸類；停用父網域會暫停整棵子網域及所屬 DNS／代理，但保留各子項原本的啟用狀態。
+- 網域重新命名與整棵刪除會原子更新或移除相關 DNS 名稱、CNAME 目標、代理 Host 及 aliases；衝突時不會部分寫入。
+- DNS 診斷支援 A、AAAA、CNAME、MX、TXT、NS、SRV，顯示 rcode、命中來源與完整答案鏈，不會修改設定。
+
+## 代理站台
+
+代理不會因 DNS 記錄存在而自動公開。每個站台必須明確建立，且可設定主要 Host、精確 alias 或 `*.example.com` wildcard alias。每個站台支援精確及最長前綴 path location：
+
+- location 可代理至一個或多個 HTTP(S) target，或由自訂 A/AAAA 記錄推導目標；也可回傳 301、302、307、308 redirect。
+- rewrite 支援 strip prefix 或 replace prefix；request/response header 可使用受控 set/remove 及安全白名單變數，不執行任意表達式。
+- 多上游採等權 round-robin，對連線錯誤、timeout、502、503、504 被動暫停故障節點；安全方法可改試下一個健康節點。
+- 每個 location 可設定 request body 上限、IP allow/deny、記憶體 rate limit、持久 proxy cache 與壓縮。預設 body 上限為 10 MiB、rate limit 與 cache 關閉。
+- proxy cache 位於 `data/proxy-cache`，預設全域上限 1 GiB；遵守 `Cache-Control` 與 `Vary`，不快取含 Authorization、Cookie、Set-Cookie、private 或 no-store 的回應。
+- 對可壓縮且至少 1 KiB 的未壓縮回應，依 `Accept-Encoding` 協商 Brotli 或 gzip。
 
 本機不終止 TLS；對外 HTTPS 建議由 Cloudflare Tunnel 或其他受信任入口處理。
 
@@ -99,6 +112,8 @@ npm run build
 
 - 管理介面預設開放區網，部署者應使用防火牆限制可信網段。
 - `data/config.json` 可包含 Cloudflare Tunnel token，必須視為機密檔案並限制存取。
+- 只有 direct peer 位於 `proxy.trustedProxyCidrs` 時才信任 `X-Forwarded-For`；預設只信任本機 loopback。
+- 磁碟 proxy cache 可能保存上游公開回應內容；應將 `data/proxy-cache` 納入主機資料保護與容量監控。
 - DNSSEC 僅透傳，不在本機驗證。
 - 不支援 AXFR/IXFR、RFC 2136 動態更新或本機 TLS 憑證管理。
 - 即時事件只保留於記憶體，最多 500 筆；不永久保存 DNS 查詢內容。
