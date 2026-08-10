@@ -36,3 +36,16 @@
 - [x] 驗證 375、768、1024、1440 px 無水平溢位，以及深色、淺色、手機截圖與鍵盤 skip link。
 - [x] 完成 48 項單元/整合測試、3 項 E2E、lint、audit、LSP 與 v0.1.2 build 驗證。
 - [x] 建立並驗證 v0.1.2 Release，以及只有 Release `index.js` 的單檔冷啟動與 runtime digest。
+
+## 2026-08-10：DNS 管理與 Nginx 式代理
+
+- [x] 確認 DNS CRUD、全自建對話元件、CNAME 答案鏈、上游健康、診斷、網域工作區及 Nginx 式代理契約。
+- [x] 先以測試重現 CNAME 僅回 alias、上游未探測、DNS 診斷缺失、記錄無法編輯／刪除，以及舊代理模型能力不足。
+- [x] 完成 CNAME 自訂／上游追查、循環與深度防護，以及啟動時與每五分鐘的非阻塞上游健康探測。
+- [x] 完成受認證與 CSRF 保護的 DNS 診斷 API，支援 A、AAAA、CNAME、MX、TXT、NS、SRV。
+- [x] 完成網域工作區 migration、最長後綴歸類、相對名稱、網站範本、級聯狀態、整棵重新命名與刪除。
+- [x] 完成代理站台 migration、Host aliases、exact／prefix locations、redirect、rewrite、headers、多上游與 WebSocket。
+- [x] 完成 body 上限、可信代理、IP ACL、記憶體限流、持久有界 cache、Brotli／gzip 與管理清除 API。
+- [x] 完成 DNS／網域／代理 UI CRUD、五步代理精靈、全自建 modal、自訂驗證、焦點鎖定及 reduced-motion。
+- [x] 完成 74 項單元／整合測試、6 項 E2E、lint、audit、LSP、視覺與 v0.1.3 build 驗證。
+- [ ] 發布並驗證 v0.1.3 Release、GitHub CI 與單檔冷啟動。
