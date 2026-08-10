@@ -93,3 +93,42 @@
 - 自主疊代需先以既有測試建立行為基線；高風險而未受保護的 UX 行為先補 characterization 或回歸測試。
 - 驗收需包含既有 E2E 全數通過、針對 UX 改善新增回歸測試，以及 375、768、1024、1440 px 寬度的無水平溢位檢查。
 - 深色與淺色模式皆需檢查可讀性、焦點狀態、載入/空白/錯誤/成功/停用狀態，並產出桌面與手機截圖供人工審查。
+
+## 2026-08-10：DNS 管理與解析可靠性修復
+
+- DNS 記錄介面必須提供完整單筆 CRUD。每列右側使用具 tooltip 與可存取名稱的明確編輯、刪除圖示按鈕。
+- 編輯時允許修改名稱、類型、值、TTL 與啟用狀態；儲存後原子更新 `data/config.json`、立即熱更新解析器，重新載入後仍須保留。
+- 刪除前顯示應用程式自建確認 modal，清楚列出名稱、類型與值；確認後立即原子保存並生效。
+- 管理介面不得呼叫瀏覽器原生 `alert()`、`confirm()` 或 `prompt()`，也不得依賴原生 `<dialog>` UI 或瀏覽器驗證泡泡。記錄、路由、Tunnel 清除與後續確認流程統一使用自建 modal、自訂繁中驗證、焦點鎖定、Esc 關閉及關閉後焦點歸還。
+- 自訂 CNAME 回應 A 或 AAAA 查詢時，解析器必須繼續追查目標，回傳 CNAME 鏈及最終位址答案；目標可來自其他自訂記錄或既有 DoH 上游。
+- CNAME 追查必須具循環與最大深度防護；錯誤不得造成程序崩潰，並保留既有上游 failover、快取及核心服務不中斷契約。
+- Cloudflare 與 Google 上游在核心啟動後立即進行一次非阻塞健康查詢，之後每 5 分鐘重新檢查；顯示延遲與最近錯誤，探測失敗不得延遲或阻止服務啟動。
+- 管理介面新增 DNS 診斷操作，支援 A、AAAA、CNAME、MX、TXT、NS、SRV；輸入名稱與類型後顯示 rcode、命中來源及完整答案鏈，不修改設定。
+- 目前問題環境為 Windows 11 系統 DoH，使用公共可解析的完整 `https://<host>/dns-query`，Cloudflare Tunnel ingress 指向本機 DoH `8053`；直接開啟 endpoint 可取得預期 HTTP 400。修復需能區分 Windows 用戶端設定與 S12 解析結果。
+- Web 動畫採純 CSS 與 Web Animations API，不新增前端 runtime 依賴。加入頁面切換、modal 開關、列表 CRUD、toast、健康狀態及 loading 的克制微動畫，時長約 140–240ms。
+- 啟用 `prefers-reduced-motion` 時停用非必要位移、縮放與持續動畫，狀態變更仍須即時且不影響操作。
+- 驗收須以 Playwright 完成新增、編輯、停用、刪除、重新載入持久化、自建 modal、Tunnel 清除、鍵盤焦點、動畫與 reduced-motion 回歸；並執行完整 test、lint、audit、build、多尺寸與深淺色視覺審查。
+- 完成後版本升至 `0.1.3`，建立原子提交、推送 `main`、發布 GitHub Release，驗證 CI 及只有 Release `index.js` 的冷啟動。
+
+## 2026-08-10：自訂網域工作區與 Nginx 式反向代理
+
+- 新增持久化的自訂網域工作區。網域保存名稱、啟用狀態、預設 TTL 與備註；底層 DNS `records` 與代理 `routes` 維持可相容的設定契約，舊設定必須自動遷移且不得遺失。
+- DNS 主導覽整合為「DNS 與網域」。網域詳情集中管理所屬 DNS 記錄、代理站台與 DNS 診斷，並保留全部及未分組記錄的管理入口。
+- 既有記錄與代理依名稱的最長網域後綴自動歸類，允許建立更具體的子網域工作區。網域內可輸入 `@`、相對名稱或完整 FQDN，介面須顯示正規化後的完整名稱，並拒絕不屬於目前工作區的名稱。
+- 新增網域可選空白工作區或網站範本。網站範本分別收集對外 A/AAAA 位址、是否建立 `www` CNAME，以及內部 upstream URL；提交前預覽將建立的 DNS 記錄與代理設定。
+- 停用父網域時，其所有子網域、所屬 DNS 記錄及代理站台均停止提供服務，重新啟用後保留各子項原有啟用狀態。刪除父網域時，自建確認 modal 必須列出受影響範圍，確認後原子刪除整棵子網域、記錄與代理。
+- 網域重新命名時，原子改寫該網域、所有子網域工作區、所屬 DNS 名稱及代理 Host/別名的舊後綴；任何重複名稱或目標衝突都必須使整次更新失敗且不留下部分變更。
+- 本次只管理 S12 本機的網域、DNS、代理與診斷，不串接 Cloudflare DNS、註冊商 API，不代為修改 NS，也不保存外部 DNS 供應商憑證。
+- 反向代理改為完整站台 CRUD：新增、編輯、複製、停用與刪除，並管理主要 Host、精確別名、`*.example.com` 萬用別名、locations、多上游、headers、rewrite/redirect、存取限制、磁碟快取與壓縮。不得提供會接收所有未匹配 Host 的 default server。
+- 舊版單一 route 自動遷移為該 Host 的 `/` 最長前綴 location，原有 target、DNS 派生目標、停用狀態及 timeout 行為必須保持相容。
+- Location 使用可預測優先序：精確路徑優先，其次最長前綴；不支援 regex 或任意腳本。每個 location 為 proxy 或 redirect，rewrite 僅支援 strip prefix／replace prefix，redirect 僅支援 `301`、`302`、`307`、`308`。
+- Request/response header 可新增、覆寫或移除；值可使用靜態字串及經白名單驗證的 `host`、`clientIp`、`scheme`、`requestId` 等安全變數，不執行任意表達式。
+- 多上游採健康節點等權 round-robin。連線錯誤、逾時及 `502`、`503`、`504` 觸發被動暫停；GET、HEAD、OPTIONS 可依序重試其餘上游，POST、PUT、PATCH、DELETE 僅能在尚未送出 request body 時重試，避免重複寫入。
+- 每個 location 可設定 request body 上限、IP allow/deny 與記憶體 rate limit。真實來源 IP 只有在直接連線來源符合全域 `trustedProxyCidrs` 時才採用 `X-Forwarded-For`，否則使用 socket IP。
+- 保守預設為 request body 上限 10 MiB、rate limit 關閉、`trustedProxyCidrs` 僅 `127.0.0.1/32` 與 `::1/128`；所有值可由管理 UI 修改並經嚴格驗證。
+- 磁碟代理快取預設關閉，位置為 `data/proxy-cache`，全域硬上限預設 1 GiB。啟用時只安全快取 GET/HEAD，遵循 `Cache-Control` 與 `Vary`，略過 Authorization、Cookie、Set-Cookie、private、no-store，採原子寫入及 LRU 淘汰；UI 顯示用量並可清除單一站台或全部快取。
+- 壓縮預設對大於等於 1 KiB、可壓縮且上游尚未編碼的內容啟用 gzip/brotli；必須依用戶端 `Accept-Encoding` 協商，不得重複壓縮或破壞 `Content-Length`／`Vary`。
+- 本機仍不終止 TLS；公開 HTTPS 繼續由 Cloudflare Tunnel 或其他受信任入口處理。
+- 代理站台編輯器使用完全自建的大型分步 modal：桌面寬版置中、手機全螢幕，依序編輯基本主機、locations、上游與改寫、headers／安全／快取、最終預覽；步驟間保留草稿，具自訂繁中驗證、焦點鎖定、Esc 關閉與焦點歸還。
+- 網域與代理 CRUD、列表狀態、modal 及步驟切換沿用純 CSS 與 Web Animations API 微動畫，並遵守既有 `prefers-reduced-motion` 契約。
+- 驗收必須涵蓋舊設定遷移、網域新增／改名／停用／串聯刪除、相對與 FQDN 記錄、網站範本、代理完整 CRUD、Host/別名/萬用匹配、location 優先序、rewrite/redirect、header、WebSocket、多上游重試安全、IP/限流/body 限制、持久快取／淘汰／清除、壓縮、熱更新、重新載入持久化與多尺寸自建 modal E2E。
