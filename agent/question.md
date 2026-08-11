@@ -218,3 +218,8 @@
 - 完成所有 migration／downgrade guard、設定與資料 schema version、備份跨版本還原、升級失敗回滾、崩潰恢復、優雅關閉、診斷包、使用手冊、OpenAPI 與部署手冊。
 - 單機驗收規模為 100,000 DNS records、1,000 proxy sites、DNS 5,000 QPS、proxy 1,000 RPS、24 小時 soak；設定更新、metrics、log rotation、backup 與告警不得造成核心服務中斷。
 - 全階段維持 TDD：每項新行為先具預期原因的 RED，再以最小 GREEN 實作並受測試保護重構。每版執行完整 unit／integration／E2E、lint、audit、LSP、build、migration、壓力／穩定性與安全審查。
+- 單檔 bootstrap 下載的新 runtime 與 native binding 先保存為 `pending` 候選，不得覆寫最後成功的 `active` metadata。候選 `require` 或 `start()` 失敗時，記錄失敗版本與去敏錯誤，立即重新驗證並啟動上一個 active；只有候選成功啟動後才原子提升為 active。沒有可用 active 時才進入內嵌 fallback。
+- active runtime、config 與 SQLite 均拒絕由較舊程式開啟較新的 schema，不作破壞性自動降版。v0.2.0、v0.3.0、v0.4.0 格式 1 備份必須可由 v1 預先完整驗證後交易式還原；未來 schema、損壞檔案或校驗不符須在進入維護模式前拒絕。
+- 啟動與維護操作使用 owner-only 崩潰標記；不完整啟動、還原或關閉在下次啟動時可辨識，先執行 SQLite integrity、config schema、runtime cache 與暫存檔清理，再提供核心服務。恢復失敗不得覆寫最後可用資料。
+- owner-only 診斷包採 ZIP＋manifest＋逐檔 SHA-256，包含去敏 config、runtime／平台／schema／integrity、服務與上游狀態、metrics 摘要、審計鏈驗證、最近有限事件與日誌尾端；不得包含 Tunnel token、密碼或 token hash、session／cookie、API token、Webhook secret或完整備份內容。
+- 量化工具固定輸出 JSON 報告與通過門檻。功能正確性先以可縮短的 CI profile 驗證；正式 v1 Release 必須另有 Linux glibc x64 的 100,000 records／1,000 sites、DNS 5,000 QPS、proxy 1,000 RPS 與 24 小時 soak 證據，未達門檻不得發布 v1.0.0。
