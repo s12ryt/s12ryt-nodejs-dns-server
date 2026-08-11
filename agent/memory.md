@@ -78,3 +78,7 @@
 - 新增 better-sqlite3 v12.6.2 官方六組 Linux glibc native downloader；真實GitHub Release下載後發現官方tar使用精確 `build/Release/better_sqlite3.node`，先補RED再支援並成功下載全部六組。
 - 完成 Debian Dockerfile／Compose與systemd部署；bootstrap新增SIGTERM／SIGINT單次 graceful close。Windows驗證主機無Docker/systemd工具，實機容器驗收移至GitHub Ubuntu deployment job並成為Release依賴。
 - v0.2.0發布前回歸：Node單元／整合126/126、Playwright 9/9、ESLint、npm audit 0、31個src JS LSP皆通過；六資產production runtime SHA-256為`1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
+- 推送24個v0.2需求、資料層、可觀測、備份、部署、版本與文件原子提交；main CI run `31508110303` 的Node 20／22／24、Playwright及真實Debian唯讀容器health／graceful stop全部成功。
+- 建立`v0.2.0` tag並完成CI run `31508260744`：六組Linux glibc native binding下載與發布、Node矩陣、9項E2E、Docker部署、Release及發布後驗收全部成功。
+- `v0.2.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.2.0`，包含`index.js`、`runtime.cjs`、`manifest.json`及ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
+- 發布後Ubuntu／Node20 runner在全新目錄只下載Release `index.js`，確認管理API HTTP 200、active版本0.2.0及`node-v115-linux-x64` binding；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache並再次提供管理API，兩次皆以SIGTERM優雅關閉。

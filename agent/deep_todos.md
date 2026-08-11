@@ -79,4 +79,4 @@
 - [x] 完成明文敏感 ZIP 備份、manifest、online SQLite snapshot、外部有界匯入、排程保留、dry-run、維護模式還原及失敗回滾。
 - [x] 完成 Docker Compose 非 root／唯讀／healthcheck／graceful stop，以及 systemd 專用帳號、權限、restart、journald與硬化設定。
 - [x] 完成 126 項單元／整合測試、9 項 E2E、lint、audit、31 個 src JS LSP 與六資產 production build 驗證。
-- [ ] 發布並驗證 v0.2.0 Release、Linux Docker CI、六個 native assets、單檔冷啟動及 rollback。
+- [x] 發布並驗證 v0.2.0 Release、Linux Docker CI、六個 native assets、單檔冷啟動及 last-known-good rollback；runtime SHA-256 為 `1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
