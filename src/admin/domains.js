@@ -3,6 +3,47 @@
 const { encodeName, normalizeName } = require("../dns/message");
 const { RecordStore } = require("../dns/records");
 
+const DEFAULT_SOA_TIMERS = Object.freeze({ refresh: 3600, retry: 600, expire: 1209600 });
+
+function localDateSerialBase(now = new Date()) {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new TypeError("SOA serial date is invalid");
+  const date = [
+    now.getFullYear().toString().padStart(4, "0"),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("");
+  return Number(`${date}00`);
+}
+
+function nextSoaSerial(current, now = new Date()) {
+  const value = Number(current);
+  if (!Number.isInteger(value) || value < 0 || value >= 0xffffffff) throw new RangeError("SOA serial is invalid");
+  return Math.max(value + 1, localDateSerialBase(now));
+}
+
+function soaNumber(value, fallback, label) {
+  const number = Number(value ?? fallback);
+  if (!Number.isInteger(number) || number < 0 || number > 0xffffffff) {
+    throw new RangeError(`${label} is invalid`);
+  }
+  return number;
+}
+
+function normalizeSoa(name, defaultTtl, source = {}, now = new Date()) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) throw new TypeError("Domain SOA must be an object");
+  const mname = normalizeDomainName(source.mname || `ns1.${name}`);
+  const rname = normalizeDomainName(source.rname || `hostmaster.${name}`);
+  return {
+    mname,
+    rname,
+    serial: soaNumber(source.serial, localDateSerialBase(now), "SOA serial"),
+    refresh: soaNumber(source.refresh, DEFAULT_SOA_TIMERS.refresh, "SOA refresh"),
+    retry: soaNumber(source.retry, DEFAULT_SOA_TIMERS.retry, "SOA retry"),
+    expire: soaNumber(source.expire, DEFAULT_SOA_TIMERS.expire, "SOA expire"),
+    minimum: soaNumber(source.minimum, defaultTtl, "SOA minimum"),
+  };
+}
+
 function normalizeDomainName(value) {
   const name = normalizeName(String(value || "").trim());
   if (!name || name.includes("*")) throw new TypeError("Domain name is invalid");
@@ -10,7 +51,7 @@ function normalizeDomainName(value) {
   return name;
 }
 
-function normalizeDomain(domain, index = 0) {
+function normalizeDomain(domain, index = 0, { now = new Date() } = {}) {
   if (!domain || typeof domain !== "object" || Array.isArray(domain)) {
     throw new TypeError(`Domain ${index} must be an object`);
   }
@@ -25,21 +66,57 @@ function normalizeDomain(domain, index = 0) {
   return {
     ...domain,
     name,
+    kind: "primary",
     enabled: domain.enabled !== false,
     defaultTtl,
     note: domain.note || "",
+    soa: normalizeSoa(name, defaultTtl, domain.soa, now),
   };
 }
 
-function normalizeDomains(domains) {
+function normalizeDomains(domains, { now = new Date() } = {}) {
   if (!Array.isArray(domains)) throw new TypeError("Domains must be an array");
-  const normalized = domains.map(normalizeDomain);
+  const normalized = domains.map((domain, index) => normalizeDomain(domain, index, { now }));
   const names = new Set();
   for (const domain of normalized) {
     if (names.has(domain.name)) throw new TypeError(`Duplicate domain: ${domain.name}`);
     names.add(domain.name);
   }
   return normalized;
+}
+
+function authorityProjection(config, domainName) {
+  const domains = normalizeDomains(config.domains || []);
+  const domain = domains.find((candidate) => candidate.name === domainName);
+  if (!domain) return null;
+  const soa = { ...domain.soa };
+  delete soa.serial;
+  const records = (config.records || [])
+    .filter((record) => classifyDomain(domains, record.name)?.name === domainName)
+    .map((record) => {
+      const value = structuredClone(record);
+      delete value.id;
+      return value;
+    })
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return { enabled: domain.enabled, defaultTtl: domain.defaultTtl, soa, records };
+}
+
+function bumpZoneSerials(previous, next, { now = new Date() } = {}) {
+  const result = structuredClone(next);
+  const previousDomains = normalizeDomains(previous.domains || [], { now });
+  result.domains = normalizeDomains(result.domains || [], { now });
+  for (const domain of result.domains) {
+    const prior = previousDomains.find((candidate) => candidate.name === domain.name);
+    if (!prior) continue;
+    domain.soa.serial = prior.soa.serial;
+    const before = authorityProjection({ ...previous, domains: previousDomains }, domain.name);
+    const after = authorityProjection({ ...result, domains: result.domains }, domain.name);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      domain.soa.serial = nextSoaSerial(prior.soa.serial, now);
+    }
+  }
+  return result;
 }
 
 function belongsTo(name, domainName) {
@@ -80,7 +157,10 @@ function domainIsEnabled(domains, name) {
 function applyDomainState(config) {
   const next = structuredClone(config);
   const domains = normalizeDomains(next.domains || []);
-  next.domains = domains;
+  next.domains = domains.map((domain) => ({
+    ...domain,
+    enabled: domainIsEnabled(domains, domain.name),
+  }));
   next.records = (next.records || []).map((record) => ({
     ...record,
     enabled: record.enabled !== false && domainIsEnabled(domains, record.name),
@@ -180,8 +260,8 @@ function deleteDomainTree(config, domainName) {
   return next;
 }
 
-function createDomainPlan(config, input) {
-  const domain = normalizeDomain(input);
+function createDomainPlan(config, input, { now = new Date() } = {}) {
+  const domain = normalizeDomain(input, 0, { now });
   const next = structuredClone(config);
   const domains = normalizeDomains(next.domains || []);
   if (domains.some((candidate) => candidate.name === domain.name)) throw new TypeError(`Duplicate domain: ${domain.name}`);
@@ -217,6 +297,7 @@ function createDomainPlan(config, input) {
 module.exports = {
   applyDomainState,
   belongsTo,
+  bumpZoneSerials,
   classifyDomain,
   createDomainPlan,
   deleteDomainTree,
@@ -227,5 +308,7 @@ module.exports = {
   renameDomainTree,
   rewriteSuffix,
   setDomainEnabled,
+  localDateSerialBase,
+  nextSoaSerial,
   updateDomain,
 };

@@ -11,6 +11,8 @@ const {
   qualifyDomainName,
   renameDomainTree,
   setDomainEnabled,
+  bumpZoneSerials,
+  nextSoaSerial,
   updateDomain,
 } = require("../../src/admin/domains");
 
@@ -88,12 +90,24 @@ test("domain metadata updates preserve the workspace tree", () => {
     note: "maintenance",
   });
 
-  assert.deepEqual(updated.domains[0], {
-    name: "example.test",
-    enabled: false,
-    defaultTtl: 900,
-    note: "maintenance",
-  });
+  assert.deepEqual(
+    {
+      name: updated.domains[0].name,
+      enabled: updated.domains[0].enabled,
+      defaultTtl: updated.domains[0].defaultTtl,
+      note: updated.domains[0].note,
+      kind: updated.domains[0].kind,
+      soaMinimum: updated.domains[0].soa.minimum,
+    },
+    {
+      name: "example.test",
+      enabled: false,
+      defaultTtl: 900,
+      note: "maintenance",
+      kind: "primary",
+      soaMinimum: 900,
+    },
+  );
   assert.equal(updated.domains[1].name, "dev.example.test");
 });
 
@@ -124,4 +138,51 @@ test("website domain plan previews records and proxy additions without mutating 
     enabled: true,
   }]);
   assert.deepEqual(config, { domains: [], records: [], routes: [] });
+});
+
+test("legacy domain workspaces become primary zones with readable SOA defaults", () => {
+  const plan = createDomainPlan({ domains: [], records: [], routes: [] }, {
+    name: "zone.example",
+    defaultTtl: 180,
+    enabled: true,
+  }, { now: new Date(2026, 7, 11, 9, 30) });
+
+  assert.equal(plan.additions.domain.kind, "primary");
+  assert.deepEqual(plan.additions.domain.soa, {
+    mname: "ns1.zone.example",
+    rname: "hostmaster.zone.example",
+    serial: 2026081100,
+    refresh: 3600,
+    retry: 600,
+    expire: 1209600,
+    minimum: 180,
+  });
+});
+
+test("SOA serials use local dates and only bump zones with authoritative changes", () => {
+  const previous = sampleConfig();
+  previous.domains = previous.domains.map((domain, index) => ({
+    ...domain,
+    kind: "primary",
+    soa: {
+      mname: `ns1.${domain.name}`,
+      rname: `hostmaster.${domain.name}`,
+      serial: 2026081100 + index,
+      refresh: 3600,
+      retry: 600,
+      expire: 1209600,
+      minimum: domain.defaultTtl,
+    },
+  }));
+  const next = structuredClone(previous);
+  next.records[0].value = "192.0.2.99";
+  next.routes[0].enabled = false;
+
+  const bumped = bumpZoneSerials(previous, next, { now: new Date(2026, 7, 11, 10, 0) });
+
+  assert.equal(bumped.domains[0].soa.serial, 2026081101);
+  assert.equal(bumped.domains[1].soa.serial, 2026081101);
+  assert.equal(bumped.domains[2].soa.serial, 2026081102);
+  assert.equal(nextSoaSerial(2026081199, new Date(2026, 7, 11, 23, 59)), 2026081200);
+  assert.equal(nextSoaSerial(2026081101, new Date(2026, 7, 12, 0, 1)), 2026081200);
 });
