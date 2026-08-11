@@ -1,0 +1,1 @@
+u s12-dns - "S12 DNS Server" /var/lib/s12-dns-server /usr/sbin/nologin

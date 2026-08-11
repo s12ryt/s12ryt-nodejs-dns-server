@@ -1,0 +1,30 @@
+[Unit]
+Description=S12 DNS Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=s12-dns
+Group=s12-dns
+WorkingDirectory=/var/lib/s12-dns-server
+ExecStart=/usr/bin/node /opt/s12-dns-server/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/s12-dns-server
+
+[Install]
+WantedBy=multi-user.target
