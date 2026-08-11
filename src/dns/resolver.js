@@ -79,7 +79,6 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
           const visited = new Set(context.visited);
           visited.add(normalizeName(question.name));
           if (!target || context.depth >= MAX_CNAME_DEPTH || visited.has(target)) {
-            onEvent({ kind: "dns", source: "custom", name: question.name, type: question.type, message: "CNAME cycle or depth limit" });
             return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
           }
 
@@ -91,7 +90,6 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
           const targetResponse = parseMessage(targetWire);
           if (targetResponse.flags.rcode === 2) return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
 
-          onEvent({ kind: "dns", source: "custom", name: question.name, type: question.type });
           return buildResponse(queryWire, [
             ...aliases,
             ...targetResponse.answers.map(recordForEncoding),
@@ -101,7 +99,6 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
             authorities: targetResponse.authorities.map(recordForEncoding),
           });
         }
-        onEvent({ kind: "dns", source: "custom", name: question.name, type: question.type });
         return buildResponse(queryWire, customRecords, { authoritative: true });
       }
 
@@ -109,8 +106,7 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
        const cached = cache.get(key);
        if (cached) {
          addSource(context, "cache");
-         onEvent({ kind: "dns", source: "cache", name: question.name, type: question.type });
-        return withTransactionId(cached, query.id);
+         return withTransactionId(cached, query.id);
       }
 
       for (const upstream of upstreams) {
@@ -124,8 +120,7 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
            cache.set(key, responseWire, ttl, { successful: response.flags.rcode === 0 && response.answers.length > 0 });
            const source = upstream.name || "upstream";
            addSource(context, source);
-           onEvent({ kind: "dns", source, name: question.name, type: question.type });
-          return responseWire;
+           return responseWire;
         } catch (error) {
           const normalized = error instanceof UpstreamError
             ? error
@@ -138,8 +133,23 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
   }
 
   return {
-    async resolve(queryWire) {
-      return resolveInternal(queryWire);
+    async resolve(queryWire, request = {}) {
+      const startedAt = process.hrtime.bigint();
+      const query = parseMessage(queryWire);
+      const sources = [];
+      const responseWire = await resolveInternal(queryWire, { depth: 0, visited: new Set(), sources });
+      const response = parseMessage(responseWire);
+      const question = query.questions[0];
+      onEvent({
+        ...request,
+        kind: "dns",
+        source: sources.at(-1) || "none",
+        name: question?.name || "",
+        type: question?.type || "unknown",
+        rcode: rcodeName(response.flags.rcode),
+        durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+      });
+      return responseWire;
     },
     async diagnose(name, type) {
       const normalizedName = normalizeName(name);

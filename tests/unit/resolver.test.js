@@ -110,6 +110,33 @@ test("resolver diagnostics report rcode, source chain and complete answers", asy
   assert.equal(result.answers[1].address, "203.0.113.50");
 });
 
+test("resolver emits one timed client event for a complete CNAME chain", async () => {
+  const events = [];
+  const resolver = createResolver({
+    records: new RecordStore([
+      { name: "alias.telemetry.test", type: "CNAME", value: "target.telemetry.test", ttl: 60 },
+      { name: "target.telemetry.test", type: "A", value: "192.0.2.88", ttl: 60 },
+    ]),
+    onEvent: (event) => events.push(event),
+  });
+
+  await resolver.resolve(createQuery("alias.telemetry.test", "A"), {
+    transport: "doh",
+    clientIp: "192.0.2.7",
+    method: "POST",
+  });
+
+  const queries = events.filter((event) => event.kind === "dns");
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].name, "alias.telemetry.test");
+  assert.equal(queries[0].type, "A");
+  assert.equal(queries[0].source, "custom");
+  assert.equal(queries[0].rcode, "NOERROR");
+  assert.equal(queries[0].transport, "doh");
+  assert.equal(queries[0].clientIp, "192.0.2.7");
+  assert.equal(Number.isFinite(queries[0].durationMs), true);
+});
+
 test("resolver fails over retryable errors, caches success, and rewrites transaction IDs", async () => {
   let firstCalls = 0;
   let secondCalls = 0;
