@@ -1,14 +1,18 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const path = require("node:path");
 
 const { RecordStore } = require("../dns/records");
+const { PolicyStore } = require("../dns/policy");
+const { normalizeSubscription } = require("../dns/policy-subscriptions");
 const { ProxyRoutes, migrateRoute } = require("../services/proxy-routes");
 const { normalizeCidrs } = require("../services/proxy-security");
 const { readJson, writeJsonAtomic } = require("./atomic-file");
-const { normalizeDomains } = require("./domains");
+const { bumpZoneSerials, normalizeDomains } = require("./domains");
 
-const CONFIG_SCHEMA_VERSION = 1;
+const CONFIG_SCHEMA_VERSION = 3;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const DEFAULT_CONFIG = Object.freeze({
   schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -36,13 +40,32 @@ const DEFAULT_CONFIG = Object.freeze({
   domains: [],
   records: [],
   routes: [],
+  dnsPolicy: { rules: [], subscriptions: [] },
 });
 
-function migrateConfig(input) {
+function ensureRecordIds(records, { uuid = crypto.randomUUID } = {}) {
+  if (!Array.isArray(records)) throw new TypeError("DNS records must be an array");
+  const ids = new Set();
+  return records.map((record, index) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new TypeError(`Record ${index} must be an object`);
+    }
+    const id = record.id === undefined ? uuid() : String(record.id).toLowerCase();
+    if (!UUID_V4.test(id)) throw new TypeError(`Record ${index} has an invalid record id`);
+    if (ids.has(id)) throw new TypeError(`Duplicate record id: ${id}`);
+    ids.add(id);
+    return { ...record, id };
+  });
+}
+
+function migrateConfig(input, { now = new Date() } = {}) {
   const migrated = structuredClone(input);
-  if (!("schemaVersion" in migrated)) migrated.schemaVersion = CONFIG_SCHEMA_VERSION;
+  if (!("schemaVersion" in migrated) || migrated.schemaVersion < CONFIG_SCHEMA_VERSION) {
+    migrated.schemaVersion = CONFIG_SCHEMA_VERSION;
+  }
   if (!("tunnel" in migrated)) migrated.tunnel = { token: "" };
   if (!("domains" in migrated)) migrated.domains = [];
+  if (!("dnsPolicy" in migrated)) migrated.dnsPolicy = structuredClone(DEFAULT_CONFIG.dnsPolicy);
   if (!("observability" in migrated)) migrated.observability = structuredClone(DEFAULT_CONFIG.observability);
   else {
     migrated.observability = {
@@ -54,6 +77,8 @@ function migrateConfig(input) {
     };
   }
   migrated.proxy = { ...structuredClone(DEFAULT_CONFIG.proxy), ...(migrated.proxy || {}) };
+  migrated.domains = normalizeDomains(migrated.domains, { now });
+  migrated.records = ensureRecordIds(migrated.records || []);
   migrated.routes = (migrated.routes || []).map(migrateRoute);
   return migrated;
 }
@@ -63,7 +88,7 @@ function validatePortGroup(name, value) {
   if (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535) throw new RangeError(`${name} port is invalid`);
 }
 
-function validateConfig(input) {
+function validateConfig(input, { now = new Date() } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("Configuration must be an object");
   if (!Number.isInteger(input.schemaVersion) || input.schemaVersion < 1) {
     throw new RangeError("Configuration schema version is invalid");
@@ -128,8 +153,22 @@ function validateConfig(input) {
     throw new TypeError("Tunnel token must be a string");
   }
   const validated = structuredClone(input);
+  if (!validated.dnsPolicy || typeof validated.dnsPolicy !== "object" || Array.isArray(validated.dnsPolicy)) {
+    throw new TypeError("DNS policy configuration is required");
+  }
+  if (!Array.isArray(validated.dnsPolicy.subscriptions)) throw new TypeError("DNS policy subscriptions must be an array");
+  const subscriptions = validated.dnsPolicy.subscriptions.map(normalizeSubscription);
+  const subscriptionIds = new Set();
+  for (const subscription of subscriptions) {
+    if (subscriptionIds.has(subscription.id)) throw new TypeError(`Duplicate DNS policy subscription id: ${subscription.id}`);
+    subscriptionIds.add(subscription.id);
+  }
+  validated.dnsPolicy = {
+    rules: new PolicyStore({ rules: validated.dnsPolicy.rules }).toJSON(),
+    subscriptions,
+  };
   validated.proxy.trustedProxyCidrs = trustedProxyCidrs;
-  validated.domains = normalizeDomains(validated.domains);
+  validated.domains = normalizeDomains(validated.domains, { now });
   const records = new RecordStore(validated.records);
   validated.routes = new ProxyRoutes(validated.routes, { records }).toJSON();
   return validated;
@@ -139,16 +178,18 @@ class ConfigStore {
   #config;
   #listeners = new Set();
 
-  constructor({ directory = path.resolve("data") } = {}) {
+  constructor({ directory = path.resolve("data"), now = () => new Date() } = {}) {
     this.filePath = path.join(directory, "config.json");
+    this.now = now;
   }
 
   async load() {
     try {
       const stored = await readJson(this.filePath);
-      const migrated = migrateConfig(stored);
-      this.#config = validateConfig(migrated);
-      if (JSON.stringify(stored) !== JSON.stringify(migrated)) await writeJsonAtomic(this.filePath, this.#config);
+      const now = this.now();
+      const migrated = migrateConfig(stored, { now });
+      this.#config = validateConfig(migrated, { now });
+      if (JSON.stringify(stored) !== JSON.stringify(this.#config)) await writeJsonAtomic(this.filePath, this.#config);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       this.#config = structuredClone(DEFAULT_CONFIG);
@@ -162,8 +203,22 @@ class ConfigStore {
     return structuredClone(this.#config);
   }
 
-  async update(value) {
-    const validated = validateConfig(value);
+  async update(value, { soaSerials = {} } = {}) {
+    const now = this.now();
+    const migrated = migrateConfig(value, { now });
+    const withSerials = this.#config ? bumpZoneSerials(this.#config, migrated, { now }) : migrated;
+    if (!soaSerials || typeof soaSerials !== "object" || Array.isArray(soaSerials)) {
+      throw new TypeError("Imported SOA serials must be an object");
+    }
+    for (const [name, serial] of Object.entries(soaSerials)) {
+      if (!Number.isInteger(serial) || serial < 0 || serial > 0xffffffff) {
+        throw new RangeError(`Imported SOA serial is invalid: ${name}`);
+      }
+      const domain = withSerials.domains.find((candidate) => candidate.name === name);
+      if (!domain) throw new TypeError(`Imported SOA zone is unknown: ${name}`);
+      domain.soa.serial = Math.max(domain.soa.serial, serial);
+    }
+    const validated = validateConfig(withSerials, { now });
     await writeJsonAtomic(this.filePath, validated);
     this.#config = validated;
     for (const listener of this.#listeners) listener(this.get());
@@ -176,4 +231,11 @@ class ConfigStore {
   }
 }
 
-module.exports = { CONFIG_SCHEMA_VERSION, ConfigStore, DEFAULT_CONFIG, migrateConfig, validateConfig };
+module.exports = {
+  CONFIG_SCHEMA_VERSION,
+  ConfigStore,
+  DEFAULT_CONFIG,
+  ensureRecordIds,
+  migrateConfig,
+  validateConfig,
+};
