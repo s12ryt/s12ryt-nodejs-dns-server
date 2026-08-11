@@ -93,6 +93,11 @@
 - 建立`v0.3.0` tag指向`b341f029edaf331aacbb2a6003121349b233df05`；tag CI run `31526833987`的Node矩陣、E2E、Docker部署、六組Linux native binding、Release及發布後驗收全部成功。
 - `v0.3.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.3.0`，包含index、runtime、manifest與ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。
 - 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
+- 進入v1.0.0後，以TDD完成候選runtime pending／promotion交易、digest不可變檔名、去敏failed metadata及previous last-known-good回退；active只有候選完整啟動後才更新。
+- 完成跨版本備份預檢：config schema、SQLite quick_check／application id／schema一致性均在maintenance前驗證，future／corrupt／digest mismatch不會修改運行資料。
+- 完成RecoveryManager的startup／restore／shutdown owner-only marker及精確temp recovery；完成owner-only診斷ZIP，遞迴去敏並排除SQLite、完整備份、Tunnel／Webhook／session／token secrets。
+- 完成可重現benchmark工具：固定ci／scale／release profiles、100,000 records／1,000 sites資料集、真UDP DNS與HTTP proxy並行負載、維運替換與核心中斷記錄、原子JSON報告及CI artifacts；Windows 30秒scale短測達DNS 5,249.96 QPS、proxy 1,049.99 RPS、proxy error 0.0762%、核心中斷0，但明確標記`formal:false`，不能取代Linux 24小時正式證據。
+- 新增維運、API v2、Docker／systemd部署回滾及benchmark四份正式手冊。v1候選本機回歸為Node226/226、Playwright14/14、ESLint、npm audit 0、50個src JS與bootstrap／scripts LSP 0；runtime SHA-256為`d375e7e476346b27e3c1a71c9caa081f2b9fb61efba9d216d231490369c17b55`。Linux glibc x64 WSL2（glibc2.41、Node24.18.0）已確認可用，24小時formal soak尚待完成。
 - 進入 v0.4.0 後，以 TDD 完成 SQLite schema v6、固定／自訂 RBAC、多使用者、邀請、持久 session、scoped API token 與 legacy admin migration。
 - 完成集中管理授權：Cookie與Bearer共用角色權限，API token另受scope限制；完整敏感備份與日誌維持owner-only且不可由自訂角色擴權。
 - 完成SHA-256防竄改審計鏈、365日保留、遞迴敏感欄位去敏、篩選／分頁／驗證／owner NDJSON匯出；高風險身分、設定、備份、Webhook、proxy cache與Tunnel mutation均入鏈。
