@@ -69,9 +69,46 @@ jobs:
         if: always()
         run: docker rm --force s12-dns-test >/dev/null 2>&1 || true
 
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run non-formal transport benchmark smoke profile
+        run: npm run benchmark:ci
+      - name: Preserve benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke-${{ github.sha }}
+          path: benchmark-results/benchmark-ci.json
+          if-no-files-found: error
+
+  benchmark-scale:
+    if: startsWith(github.ref, 'refs/tags/v1.')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run non-formal release-size transport benchmark
+        run: npm run benchmark:scale
+      - name: Preserve release-size benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-scale-${{ github.sha }}
+          path: benchmark-results/benchmark-scale.json
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, e2e, deployment]
+    needs: [test, e2e, deployment, benchmark-smoke, benchmark-scale]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -38,7 +38,11 @@ test("CI builds and health checks the production container before publishing", a
   assert.match(workflow, /docker build --tag s12-dns-server:test/);
   assert.match(workflow, /docker inspect[^\n]+\.State\.Health\.Status/);
   assert.match(workflow, /docker stop --time 30 s12-dns-test/);
-  assert.match(workflow, /needs: \[test, e2e, deployment\]/);
+  const releaseNeeds = workflow.match(/^  release:\r?\n[\s\S]*?^    needs: \[([^\]]+)\]/m)?.[1]
+    .split(",")
+    .map((value) => value.trim())
+    .sort();
+  assert.deepEqual(releaseNeeds, ["benchmark-scale", "benchmark-smoke", "deployment", "e2e", "test"]);
 });
 
 test("CI verifies Linux index-only cold start and last-known-good rollback after release", async () => {
