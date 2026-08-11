@@ -33,8 +33,181 @@ test("SQLite store creates the production schema with WAL and integrity guards",
   assert.deepEqual(
     store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
       .map((row) => row.name),
-    ["audit_entries", "config_versions", "metric_samples", "proxy_health_events", "schema_migrations", "webhook_jobs"],
+    ["api_tokens", "audit_entries", "audit_log", "config_versions", "idempotency_keys", "invitations", "metric_samples", "proxy_health_events", "roles", "schema_migrations", "sessions", "users", "webhook_jobs"],
   );
+});
+
+test("SQLite store persists completed idempotent responses and rejects conflicting reuse", async (t) => {
+  let now = Date.parse("2026-08-12T12:00:00.000Z");
+  const directory = await temporaryDirectory();
+  const store = new SqliteStore({ directory, now: () => new Date(now) });
+  t.after(() => store.close());
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  store.open();
+
+  assert.deepEqual(store.reserveIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    fingerprint: "a".repeat(64),
+  }), { state: "started" });
+  assert.deepEqual(store.reserveIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    fingerprint: "a".repeat(64),
+  }), { state: "pending" });
+  assert.throws(() => store.reserveIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    fingerprint: "b".repeat(64),
+  }), /different request/i);
+
+  store.completeIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    statusCode: 201,
+    response: { data: { id: "dns-editor" } },
+  });
+  assert.deepEqual(store.reserveIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    fingerprint: "a".repeat(64),
+  }), {
+    state: "replay",
+    statusCode: 201,
+    response: { data: { id: "dns-editor" } },
+  });
+
+  now += 24 * 60 * 60 * 1000 + 1;
+  assert.deepEqual(store.reserveIdempotency({
+    actorId: "user-owner",
+    key: "create-role-1",
+    fingerprint: "c".repeat(64),
+  }), { state: "started" });
+});
+
+test("SQLite store persists roles, users, invitations, sessions and hashed API tokens", async (t) => {
+  const directory = await temporaryDirectory();
+  const store = new SqliteStore({ directory, now: () => new Date("2026-08-12T10:00:00.000Z") });
+  t.after(() => store.close());
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  store.open();
+
+  store.createRole({ id: "dns-editor", name: "DNS editor", permissions: ["dns:read", "dns:write"] });
+  assert.deepEqual(store.listRoles(), [
+    { id: "dns-editor", name: "DNS editor", permissions: ["dns:read", "dns:write"], createdAt: "2026-08-12T10:00:00.000Z", updatedAt: "2026-08-12T10:00:00.000Z" },
+  ]);
+
+  const owner = store.createUser({
+    id: "user-owner",
+    username: "owner",
+    displayName: "Primary owner",
+    role: "owner",
+    passwordHash: "hash-owner",
+    enabled: true,
+  });
+  const editor = store.createUser({
+    id: "user-editor",
+    username: "editor",
+    displayName: "DNS editor",
+    role: "dns-editor",
+    passwordHash: "hash-editor",
+    enabled: true,
+  });
+  assert.equal(owner.role, "owner");
+  assert.equal(store.getUserByUsername("EDITOR").id, editor.id);
+  assert.equal(store.listUsers().length, 2);
+  assert.equal(store.updateUser("user-editor", { enabled: false }).enabled, false);
+  assert.throws(() => store.createUser({ ...editor, id: "duplicate", passwordHash: "hash" }), /unique/i);
+
+  const invitation = store.createInvitation({
+    id: "invite-1",
+    tokenHash: "invite-hash",
+    username: "invited",
+    role: "viewer",
+    expiresAt: "2026-08-13T10:00:00.000Z",
+    createdBy: owner.id,
+  });
+  assert.equal(store.getInvitationByTokenHash("invite-hash").id, invitation.id);
+  assert.equal(store.consumeInvitation("invite-1", "2026-08-12T11:00:00.000Z").usedAt, "2026-08-12T11:00:00.000Z");
+
+  store.createSessionRecord({
+    idHash: "session-hash",
+    userId: owner.id,
+    csrfHash: "csrf-hash",
+    csrf: "csrf-token",
+    createdAt: "2026-08-12T10:00:00.000Z",
+    lastSeenAt: "2026-08-12T10:00:00.000Z",
+    expiresAt: "2026-08-13T10:00:00.000Z",
+    sourceIp: "192.0.2.1",
+  });
+  assert.equal(store.getSessionRecord("session-hash").userId, owner.id);
+  assert.equal(store.touchSession("session-hash", "2026-08-12T10:30:00.000Z").lastSeenAt, "2026-08-12T10:30:00.000Z");
+  assert.equal(store.revokeUserSessions(owner.id), 1);
+  assert.equal(store.getSessionRecord("session-hash").revokedAt, "2026-08-12T10:00:00.000Z");
+
+  store.createApiToken({
+    id: "token-1",
+    userId: owner.id,
+    name: "automation",
+    tokenHash: "api-hash",
+    scopes: ["dns:read", "dns:write"],
+    createdAt: "2026-08-12T10:00:00.000Z",
+    expiresAt: "2026-09-12T10:00:00.000Z",
+  });
+  const token = store.getApiTokenByHash("api-hash");
+  assert.deepEqual(token.scopes, ["dns:read", "dns:write"]);
+  assert.equal(store.markApiTokenUsed("token-1", "2026-08-12T10:05:00.000Z").lastUsedAt, "2026-08-12T10:05:00.000Z");
+  assert.equal(store.revokeApiToken("token-1").revokedAt, "2026-08-12T10:00:00.000Z");
+});
+
+test("SQLite store writes a verifiable filtered audit hash chain with bounded retention", async (t) => {
+  let now = Date.parse("2026-08-12T12:00:00.000Z");
+  const directory = await temporaryDirectory();
+  const store = new SqliteStore({ directory, now: () => new Date(now) });
+  t.after(() => store.close());
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  store.open();
+
+  store.database.prepare(`
+    INSERT INTO audit_log (
+      created_at, actor_id, actor_type, action, resource, before_json, after_json,
+      request_id, source_ip, previous_hash, entry_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("2025-01-01T00:00:00.000Z", "old", "user", "old.action", "old", "null", "null", "old-request", "127.0.0.1", null, "stale");
+
+  const first = store.appendAuditEntry({
+    actorId: "user-owner",
+    actorType: "user",
+    action: "dns.record.create",
+    resource: "dns-record:record-1",
+    before: null,
+    after: { name: "www.example.test", type: "A", value: "192.0.2.10" },
+    requestId: "request-1",
+    sourceIp: "192.0.2.1",
+  });
+  now += 1000;
+  const second = store.appendAuditEntry({
+    actorId: "token-1",
+    actorType: "api-token",
+    action: "dns.record.update",
+    resource: "dns-record:record-1",
+    before: { value: "192.0.2.10" },
+    after: { value: "192.0.2.11" },
+    requestId: "request-2",
+    sourceIp: "198.51.100.2",
+  });
+
+  assert.equal(first.previousHash, null);
+  assert.equal(second.previousHash, first.entryHash);
+  assert.match(second.entryHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(store.verifyAuditChain(), { valid: true, entries: 2, brokenAt: null });
+  assert.deepEqual(store.listAuditEntries({ action: "dns.record.update", limit: 10, offset: 0 }), {
+    items: [second], total: 1, limit: 10, offset: 0,
+  });
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE actor_id = 'old'").get().count, 0);
+
+  store.database.prepare("UPDATE audit_log SET after_json = ? WHERE id = ?").run('{"value":"tampered"}', second.id);
+  assert.deepEqual(store.verifyAuditChain(), { valid: false, entries: 2, brokenAt: second.id });
 });
 
 test("SQLite migrations are transactional and a failed migration leaves the prior version intact", async (t) => {
