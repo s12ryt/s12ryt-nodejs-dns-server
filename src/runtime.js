@@ -10,8 +10,11 @@ const { applyDomainState } = require("./admin/domains");
 const { EventLog } = require("./admin/event-log");
 const { createAdminService } = require("./admin/server");
 const { DnsCache } = require("./dns/cache");
+const { PolicyStore } = require("./dns/policy");
+const { PolicySubscriptionManager } = require("./dns/policy-subscriptions");
 const { RecordStore } = require("./dns/records");
 const { createResolver } = require("./dns/resolver");
+const { ZoneStore } = require("./dns/zones");
 const { createDohUpstream } = require("./dns/upstream-doh");
 const { createUpstreamHealthMonitor } = require("./dns/upstream-health");
 const { MetricsRegistry } = require("./observability/metrics");
@@ -23,6 +26,7 @@ const { createDohService } = require("./services/doh-server");
 const { createMetricsService } = require("./services/metrics-server");
 const { createProxyService } = require("./services/proxy-server");
 const { ProxyCache } = require("./services/proxy-cache");
+const { ProxyHealthMonitor } = require("./services/proxy-health");
 const { ProxyRoutes } = require("./services/proxy-routes");
 const { SqliteStore } = require("./storage/sqlite-store");
 const { ensureCloudflared } = require("./tunnel/download");
@@ -66,12 +70,16 @@ function createRuntime({
   healthMonitorFactory = createUpstreamHealthMonitor,
   proxyCacheFactory = (options) => new ProxyCache(options),
   sqliteStoreFactory = (options) => new SqliteStore(options),
+  zoneStoreFactory = (options) => new ZoneStore(options),
+  policyStoreFactory = (options) => new PolicyStore(options),
+  policySubscriptionManagerFactory = (options) => new PolicySubscriptionManager(options),
   metricsRegistryFactory = (options) => new MetricsRegistry(options),
   structuredLoggerFactory = (options) => new StructuredLogger(options),
   webhookDispatcherFactory = (options) => new WebhookDispatcher(options),
   telemetryPipelineFactory = (options) => new TelemetryPipeline(options),
   backupManagerFactory = (options) => new BackupManager(options),
   backupSchedulerFactory = (options) => new BackupScheduler(options),
+  proxyHealthMonitorFactory = (options) => new ProxyHealthMonitor(options),
   applicationVersion = APPLICATION_VERSION,
 } = {}) {
   const config = new ConfigStore({ directory });
@@ -94,9 +102,17 @@ function createRuntime({
   });
 
   function recordEvent(event) {
-    if (components.telemetry) return components.telemetry.record(event);
-    events.add(event);
-    return event;
+    const recorded = components.telemetry ? components.telemetry.record(event) : events.add(event);
+    if (event?.kind === "proxy-health" && typeof components.storage?.recordProxyHealthEvent === "function") {
+      try {
+        components.storage.recordProxyHealthEvent(event);
+      } catch (error) {
+        const failure = { kind: "storage-error", message: `Proxy health history was not recorded: ${error.message}` };
+        if (components.telemetry) components.telemetry.record(failure);
+        else events.add(failure);
+      }
+    }
+    return recorded;
   }
 
   function tunnelConfiguration(storedToken) {
@@ -223,8 +239,10 @@ function createRuntime({
       })),
       cache: { entries: components.cache?.size || 0 },
       proxyCache: components.proxyCache?.status() || null,
+      proxyHealth: components.proxyHealth?.status() || null,
       storage: components.storage?.status() || null,
       observability: components.metrics?.snapshot() || null,
+      dnsPolicySubscriptions: components.policySubscriptions?.status() || [],
       backup: {
         scheduled: Boolean(components.backupScheduler),
         maintenance: maintenanceActive,
@@ -245,9 +263,12 @@ function createRuntime({
     }
   }
 
-  function applyLoadedConfiguration(current) {
+  async function applyLoadedConfiguration(current) {
     const effective = applyDomainState(current);
     components.records.replace(effective.records);
+    components.zones.replace({ domains: effective.domains, records: effective.records });
+    components.policies.replace(current.dnsPolicy.rules);
+    await components.policySubscriptions.replace(current.dnsPolicy);
     components.routes.replace(effective.routes.filter((route) => route.enabled));
     components.upstreams.splice(0, components.upstreams.length, ...current.upstreams.map(createDohUpstream));
     components.trustedProxyCidrs.splice(0, components.trustedProxyCidrs.length, ...current.proxy.trustedProxyCidrs);
@@ -299,8 +320,10 @@ function createRuntime({
     maintenanceRestored = false;
     maintenanceTunnelWasActive = tunnelIsActive();
     components.backupScheduler?.pause();
+    components.proxyHealth?.pause();
     await components.telemetry?.close();
     components.upstreamHealth?.close();
+    components.policySubscriptions?.pause();
     await closePublicServices();
     await components.proxyCache?.close();
     if (maintenanceTunnelWasActive) await tunnel.stop();
@@ -309,7 +332,7 @@ function createRuntime({
   async function reloadAfterRestore() {
     const current = await config.load();
     await auth.load();
-    applyLoadedConfiguration(current);
+    await applyLoadedConfiguration(current);
     configureTunnel(current.tunnel.token);
     if (typeof components.proxyCache.configure === "function") {
       await components.proxyCache.configure({ maxBytes: current.proxy.cacheMaxBytes });
@@ -317,9 +340,11 @@ function createRuntime({
     createTelemetry(current);
     createPublicServices(current);
     await components.proxyCache.start();
+    await components.policySubscriptions.start();
     for (const name of ["dns", "doh", "proxy", "metrics"]) await services[name].start();
     components.telemetry.start();
     components.upstreamHealth.start();
+    components.proxyHealth.start();
     if (maintenanceTunnelWasActive && tunnel.status().available) await tunnel.start();
     maintenanceRestored = true;
   }
@@ -351,8 +376,21 @@ function createRuntime({
       }
 
       components.records = new RecordStore(effective.records);
+      components.zones = zoneStoreFactory({ domains: effective.domains, records: effective.records });
+      components.policies = policyStoreFactory({ rules: current.dnsPolicy.rules });
+      components.policySubscriptions = policySubscriptionManagerFactory({
+        directory: path.join(directory, "dns-policy"),
+        policyStore: components.policies,
+        rules: current.dnsPolicy.rules,
+        subscriptions: current.dnsPolicy.subscriptions,
+        onEvent: (event) => recordEvent(event),
+      });
       components.storage = sqliteStoreFactory({ directory });
       components.routes = new ProxyRoutes(effective.routes.filter((route) => route.enabled), { records: components.records });
+      components.proxyHealth = proxyHealthMonitorFactory({
+        routes: components.routes,
+        onEvent: (event) => recordEvent(event),
+      });
       components.cache = new DnsCache(current.cache);
       components.proxyCache = proxyCacheFactory({
         directory: path.join(directory, "proxy-cache"),
@@ -369,6 +407,8 @@ function createRuntime({
       components.upstreamHealth = healthMonitorFactory({ getUpstreams: () => components.upstreams });
       components.resolver = createResolver({
         records: components.records,
+         zones: components.zones,
+         policies: components.policies,
         upstreams: components.upstreams,
         cache: components.cache,
         onEvent: (event) => recordEvent(event),
@@ -377,6 +417,11 @@ function createRuntime({
       unsubscribe = config.subscribe((next) => {
         const nextEffective = applyDomainState(next);
         components.records.replace(nextEffective.records);
+         components.zones.replace({ domains: nextEffective.domains, records: nextEffective.records });
+         components.policies.replace(next.dnsPolicy.rules);
+         void components.policySubscriptions.replace(next.dnsPolicy).catch((error) => {
+           recordEvent({ kind: "dns-policy-subscription-error", message: error.message });
+         });
         components.routes.replace(nextEffective.routes.filter((route) => route.enabled));
         components.upstreams.splice(0, components.upstreams.length, ...next.upstreams.map(createDohUpstream));
         components.trustedProxyCidrs.splice(0, components.trustedProxyCidrs.length, ...next.proxy.trustedProxyCidrs);
@@ -417,6 +462,21 @@ function createRuntime({
         updateTunnelToken,
         clearTunnelToken,
         clearProxyCache: (scope) => components.proxyCache.clear(scope),
+        getProxyOperations: () => ({
+          health: components.routes.health(),
+          draining: services.proxy.drainStatus(),
+          websockets: services.proxy.websocketStatus(),
+        }),
+        getProxyHealthHistory: ({ window, site }) => {
+          const until = new Date().toISOString();
+          const since = new Date(Date.parse(until) - METRIC_WINDOW_MS[window]).toISOString();
+          return components.storage.queryProxyHealthHistory({ since, until, site });
+        },
+        drainProxySite: (host) => services.proxy.drainSite(host),
+        resumeProxySite: (host) => services.proxy.resumeSite(host),
+        abortProxySite: (host) => services.proxy.abortSite(host),
+        drainProxyUpstream: (scope) => services.proxy.drainUpstream(scope),
+        resumeProxyUpstream: (scope) => services.proxy.resumeUpstream(scope),
         getMetricHistory,
         listWebhookJobs,
         retryWebhookJob,
@@ -431,6 +491,8 @@ function createRuntime({
         },
         deleteBackup: (fileName) => components.backups.delete(fileName),
         restoreBackup: (fileName, options) => components.backups.restore(path.join(directory, "backups", fileName), options),
+        listPolicySubscriptions: () => components.policySubscriptions.status(),
+        refreshPolicySubscription: (id) => components.policySubscriptions.refresh(id),
         ...current.admin,
       });
 
@@ -438,14 +500,18 @@ function createRuntime({
         components.storage.open();
         components.storage.recordConfigVersion(current, { source: "startup", actor: "system" });
         await components.proxyCache.start();
+        await components.policySubscriptions.start();
         for (const name of ["dns", "doh", "proxy", "admin", "metrics"]) await services[name].start();
         components.telemetry.start();
+        components.proxyHealth.start();
         components.backupScheduler.start();
         started = true;
         components.upstreamHealth.start();
       } catch (error) {
         await closeServices();
         await components.telemetry?.close().catch(() => {});
+        components.proxyHealth?.close();
+        await components.policySubscriptions?.close().catch(() => {});
         components.backupScheduler?.close();
         await components.proxyCache?.close().catch(() => {});
         components.storage?.close();
@@ -467,8 +533,10 @@ function createRuntime({
     async close() {
       if (!started) return;
       components.backupScheduler?.close();
+      components.proxyHealth?.close();
       await components.telemetry?.close().catch(() => {});
       components.upstreamHealth?.close();
+      await components.policySubscriptions?.close().catch(() => {});
       await closeServices();
       await components.proxyCache?.close().catch(() => {});
       components.storage?.close();
