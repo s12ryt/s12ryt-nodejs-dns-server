@@ -3,8 +3,12 @@
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 
 const { EventLog } = require("./event-log");
+const { FIXED_ROLES, isAllowed } = require("./access-control");
+const { accessForRequest } = require("./admin-access");
+const { handleApiV2, OPENAPI } = require("./api-v2");
 const { classifyDomain, createDomainPlan, deleteDomainTree, normalizeDomainName, updateDomain } = require("./domains");
 const { exportZoneFile, parseZoneFile, planZoneImport, planZoneRecordBatch } = require("../dns/zone-file");
 const { normalizeHost } = require("../services/proxy-routes");
@@ -17,6 +21,17 @@ const METRIC_WINDOWS = new Set(["24h", "7d", "30d"]);
 const WEBHOOK_STATES = new Set(["pending", "delivered", "dead-letter"]);
 const BACKUP_FILE_PATTERN = /^s12-[a-z][a-z0-9-]*-\d{8}T\d{6}Z\.zip$/;
 const POLICY_SUBSCRIPTION_ID = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/i;
+
+const LEGACY_OWNER_IDENTITY = Object.freeze({
+  id: "legacy-admin",
+  username: "admin",
+  displayName: "Administrator",
+  role: "owner",
+  roleId: "owner",
+  customRole: false,
+  permissions: [...FIXED_ROLES.owner],
+  enabled: true,
+});
 
 function parseCookies(header) {
   return Object.fromEntries(String(header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
@@ -115,6 +130,13 @@ function publicWebhook(value) {
   };
 }
 
+function authenticatedIdentity(value) {
+  if (!value) return null;
+  if (value.session && value.identity) return value;
+  if (value.id && value.csrf && value.identity) return { session: value, identity: value.identity };
+  return { session: value, identity: LEGACY_OWNER_IDENTITY };
+}
+
 function redactSecret(value, secret) {
   const message = String(value);
   return secret ? message.split(secret).join("[redacted]") : message;
@@ -162,6 +184,8 @@ async function sendBackupDownload(response, descriptor) {
 
 function createAdminService({
   auth,
+  audit,
+  idempotency,
   config,
   tunnel,
   updateTunnelToken,
@@ -199,11 +223,35 @@ function createAdminService({
 
   function authorize(request) {
     const id = parseCookies(request.headers.cookie)[COOKIE_NAME];
-    const session = auth.authenticate(id);
-    return session ? { id, session } : null;
+    const authenticated = authenticatedIdentity(auth.authenticate(id));
+    if (authenticated) return { id, ...authenticated, bearer: false };
+    const match = String(request.headers.authorization || "").match(/^Bearer\s+(.+)$/i);
+    if (!match || typeof auth.authenticateBearer !== "function") return null;
+    const bearer = auth.authenticateBearer(match[1]);
+    return bearer ? { id: null, session: null, identity: bearer.identity, token: bearer.token, bearer: true } : null;
+  }
+
+  function auditMutation(request, authorized, { action, resource, before = null, after = null, requestId: suppliedRequestId }) {
+    if (!audit || typeof audit.record !== "function") return null;
+    const requestId = String(suppliedRequestId || request.headers["x-request-id"] || randomUUID());
+    return audit.record({
+      actor: authorized.bearer
+        ? { id: authorized.token.id, type: "api-token" }
+        : { id: authorized.identity.id, type: "user" },
+      action,
+      resource,
+      before,
+      after,
+      requestId,
+      sourceIp: String(request.socket.remoteAddress || "unknown"),
+    });
   }
 
   async function handleApi(request, response, url) {
+    if (request.method === "GET" && url.pathname === "/api/v2/openapi.json") {
+      sendJson(response, 200, OPENAPI);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/api/bootstrap") {
       sendJson(response, 200, { configured: auth.isConfigured() });
       return;
@@ -212,9 +260,13 @@ function createAdminService({
       try {
         const body = await readJsonBody(request);
         await auth.setup(body.token, body.password);
-        const session = auth.createSession();
+        const authenticated = authenticatedIdentity(auth.createSession());
         events.add({ kind: "auth", message: "Administrator configured" });
-        sendJson(response, 201, { username: "admin", csrf: session.csrf }, { "set-cookie": sessionCookie(session.id) });
+        sendJson(response, 201, {
+          username: authenticated.identity.username,
+          csrf: authenticated.session.csrf,
+          identity: authenticated.identity,
+        }, { "set-cookie": sessionCookie(authenticated.session.id) });
       } catch (error) {
         sendJson(response, error.statusCode || 400, { error: error.message });
       }
@@ -223,33 +275,241 @@ function createAdminService({
     if (request.method === "POST" && url.pathname === "/api/login") {
       try {
         const body = await readJsonBody(request);
-        if (body.username !== "admin") throw new Error("Invalid credentials");
-        const session = await auth.login(request.socket.remoteAddress, body.password);
+        const authenticated = authenticatedIdentity(await auth.login(
+          request.socket.remoteAddress,
+          body.username,
+          body.password,
+        ));
         events.add({ kind: "auth", message: "Administrator signed in" });
-        sendJson(response, 200, { username: "admin", csrf: session.csrf }, { "set-cookie": sessionCookie(session.id) });
+        sendJson(response, 200, {
+          username: authenticated.identity.username,
+          csrf: authenticated.session.csrf,
+          identity: authenticated.identity,
+        }, { "set-cookie": sessionCookie(authenticated.session.id) });
       } catch (error) {
         const statusCode = /too many/i.test(error.message) ? 429 : (error.statusCode || 401);
         sendJson(response, statusCode, { error: error.message });
       }
       return;
     }
-
-    const authorized = authorize(request);
-    if (!authorized) {
-      sendJson(response, 401, { error: "Authentication required" });
+    if (request.method === "POST" && /^\/api\/invitations\/[^/]+\/accept$/.test(url.pathname)) {
+      try {
+        if (typeof auth.acceptInvitation !== "function") {
+          throw Object.assign(new Error("Invitations are unavailable"), { statusCode: 501 });
+        }
+        const encoded = url.pathname.slice("/api/invitations/".length, -"/accept".length);
+        const body = await readJsonBody(request);
+        const identity = await auth.acceptInvitation(decodeURIComponent(encoded), body.password, body.displayName);
+        events.add({ kind: "auth", message: `Invitation accepted: ${identity.username}` });
+        sendJson(response, 201, { identity });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
       return;
     }
-    if (!["GET", "HEAD"].includes(request.method)
+
+    const access = accessForRequest(request.method, url.pathname);
+    const authorized = authorize(request, access);
+    const sendAccessError = (statusCode, message, code) => {
+      if (url.pathname.startsWith("/api/v2/")) {
+        const requestId = String(request.headers["x-request-id"] || randomUUID());
+        sendJson(response, statusCode, { error: { code, message, requestId } }, { "x-request-id": requestId });
+      } else sendJson(response, statusCode, { error: message });
+    };
+    if (!authorized) {
+      sendAccessError(401, "Authentication required", "UNAUTHORIZED");
+      return;
+    }
+    if (access?.administratorOnly && (authorized.bearer || !["owner", "admin"].includes(authorized.identity.role))) {
+      sendAccessError(403, "Permission denied", "FORBIDDEN");
+      return;
+    }
+    if (access?.ownerOnly && (authorized.bearer || authorized.identity.role !== "owner")) {
+      sendAccessError(403, "Permission denied", "FORBIDDEN");
+      return;
+    }
+    if (access?.permission && !isAllowed(authorized.identity, access.permission)) {
+      sendAccessError(403, "Permission denied", "FORBIDDEN");
+      return;
+    }
+    if (authorized.bearer && access?.permission && !authorized.token.scopes.includes(access.permission)) {
+      sendAccessError(403, "Token scope is insufficient", "TOKEN_SCOPE_INSUFFICIENT");
+      return;
+    }
+    if (!authorized.bearer && !["GET", "HEAD"].includes(request.method)
       && !auth.validateCsrf(authorized.id, request.headers["x-csrf-token"])) {
-      sendJson(response, 403, { error: "Invalid CSRF token" });
+      sendAccessError(403, "Invalid CSRF token", "INVALID_CSRF");
+      return;
+    }
+
+    if (await handleApiV2({
+      request, response, url, authorized, auth, audit, auditMutation, config, tunnel, listBackups,
+      idempotency, readJsonBody, sendJson,
+    })) return;
+
+    if (url.pathname.startsWith("/api/v1/")) {
+      const headers = {
+        deprecation: "true",
+        link: '</api/v2/openapi.json>; rel="successor-version"',
+      };
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "API v1 is read-only" }, { ...headers, allow: "GET" });
+        return;
+      }
+      if (url.pathname === "/api/v1/config") sendJson(response, 200, publicConfig(config.get()), headers);
+      else if (url.pathname === "/api/v1/status") sendJson(response, 200, status(), headers);
+      else if (url.pathname === "/api/v1/events") sendJson(response, 200, events.list(), headers);
+      else if (url.pathname === "/api/v1/tunnel") sendJson(response, 200, tunnel.status(), headers);
+      else sendJson(response, 404, { error: "API endpoint not found" }, headers);
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/session") {
-      sendJson(response, 200, { username: "admin", csrf: authorized.session.csrf });
+      sendJson(response, 200, {
+        username: authorized.identity.username,
+        csrf: authorized.session.csrf,
+        identity: authorized.identity,
+      });
     } else if (request.method === "POST" && url.pathname === "/api/logout") {
       auth.destroySession(authorized.id);
       sendJson(response, 204, null, { "set-cookie": sessionCookie("", { clear: true }) });
+    } else if (request.method === "GET" && url.pathname === "/api/users") {
+      sendJson(response, 200, auth.listUsers(authorized.identity));
+    } else if (request.method === "GET" && url.pathname === "/api/users/invitations") {
+      sendJson(response, 200, auth.listInvitations(authorized.identity));
+    } else if (request.method === "POST" && url.pathname === "/api/users/invitations") {
+      try {
+        const body = await readJsonBody(request);
+        const invitation = { ...auth.createInvitation(authorized.identity, body) };
+        delete invitation.tokenHash;
+        auditMutation(request, authorized, {
+          action: "invitation.create",
+          resource: `invitation:${invitation.id}`,
+          after: invitation,
+        });
+        events.add({ kind: "auth", message: `User invited: ${invitation.username}` });
+        sendJson(response, 201, invitation);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "PATCH" && /^\/api\/users\/[^/]+$/.test(url.pathname)) {
+      try {
+        const id = decodeURIComponent(url.pathname.slice("/api/users/".length));
+        const before = typeof auth.listUsers === "function"
+          ? auth.listUsers(authorized.identity).find((user) => user.id === id) || null : null;
+        const identity = auth.updateUser(authorized.identity, id, await readJsonBody(request));
+        auditMutation(request, authorized, {
+          action: "user.update",
+          resource: `user:${id}`,
+          before,
+          after: identity,
+        });
+        events.add({ kind: "auth", message: `User updated: ${identity.username}` });
+        sendJson(response, 200, identity);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && /^\/api\/users\/[^/]+\/sessions\/revoke$/.test(url.pathname)) {
+      try {
+        const encoded = url.pathname.slice("/api/users/".length, -"/sessions/revoke".length);
+        const userId = decodeURIComponent(encoded);
+        const revoked = auth.revokeUserSessions(authorized.identity, userId);
+        auditMutation(request, authorized, {
+          action: "session.revoke",
+          resource: `user:${userId}:sessions`,
+          after: { revoked },
+        });
+        events.add({ kind: "auth", message: "User sessions revoked" });
+        sendJson(response, 200, { revoked });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/roles") {
+      sendJson(response, 200, auth.listRoles(authorized.identity));
+    } else if (request.method === "POST" && url.pathname === "/api/roles") {
+      try {
+        const role = auth.createRole(authorized.identity, await readJsonBody(request));
+        auditMutation(request, authorized, {
+          action: "role.create",
+          resource: `role:${role.id}`,
+          after: role,
+        });
+        events.add({ kind: "auth", message: `Role created: ${role.id}` });
+        sendJson(response, 201, { ...role, customRole: true });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/tokens") {
+      sendJson(response, 200, auth.listApiTokens(authorized.identity));
+    } else if (request.method === "POST" && url.pathname === "/api/tokens") {
+      try {
+        const token = { ...auth.createApiToken(authorized.identity, await readJsonBody(request)) };
+        delete token.tokenHash;
+        auditMutation(request, authorized, {
+          action: "api-token.create",
+          resource: `api-token:${token.id}`,
+          after: token,
+        });
+        events.add({ kind: "auth", message: `API token created: ${token.name}` });
+        sendJson(response, 201, token);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "DELETE" && /^\/api\/tokens\/[^/]+$/.test(url.pathname)) {
+      try {
+        const tokenId = decodeURIComponent(url.pathname.slice("/api/tokens/".length));
+        const before = typeof auth.listApiTokens === "function"
+          ? auth.listApiTokens(authorized.identity).find((token) => token.id === tokenId) || null : null;
+        auth.revokeApiToken(authorized.identity, tokenId);
+        auditMutation(request, authorized, {
+          action: "api-token.revoke",
+          resource: `api-token:${tokenId}`,
+          before,
+          after: { revoked: true },
+        });
+        events.add({ kind: "auth", message: "API token revoked" });
+        sendJson(response, 204, null);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/audit") {
+      try {
+        if (!audit || typeof audit.list !== "function") {
+          throw Object.assign(new Error("Audit history is unavailable"), { statusCode: 501 });
+        }
+        const number = (name, fallback) => {
+          const raw = url.searchParams.get(name);
+          if (raw === null) return fallback;
+          if (!/^\d+$/.test(raw)) throw Object.assign(new Error(`Audit ${name} is invalid`), { statusCode: 400 });
+          return Number(raw);
+        };
+        sendJson(response, 200, audit.list({
+          action: url.searchParams.get("action") || undefined,
+          actorId: url.searchParams.get("actorId") || undefined,
+          resource: url.searchParams.get("resource") || undefined,
+          since: url.searchParams.get("since") || undefined,
+          until: url.searchParams.get("until") || undefined,
+          limit: number("limit", 100),
+          offset: number("offset", 0),
+        }));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/audit/verify") {
+      if (!audit || typeof audit.verify !== "function") sendJson(response, 501, { error: "Audit verification is unavailable" });
+      else sendJson(response, 200, audit.verify());
+    } else if (request.method === "GET" && url.pathname === "/api/audit/export") {
+      if (!audit || typeof audit.exportNdjson !== "function") {
+        sendJson(response, 501, { error: "Audit export is unavailable" });
+      } else {
+        const exported = audit.exportNdjson();
+        response.writeHead(200, {
+          "content-type": exported.contentType,
+          "content-disposition": `attachment; filename="${exported.fileName}"`,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        }).end(exported.body);
+      }
     } else if (request.method === "GET" && url.pathname === "/api/config") {
       sendJson(response, 200, publicConfig(config.get()));
     } else if (request.method === "PUT" && url.pathname === "/api/config") {
@@ -263,6 +523,12 @@ function createAdminService({
             ...body.observability,
             webhook: current.observability.webhook,
           },
+        });
+        auditMutation(request, authorized, {
+          action: "config.update",
+          resource: "config:global",
+          before: current,
+          after: updated,
         });
         events.add({ kind: "config", message: "Configuration updated" });
         sendJson(response, 200, publicConfig(updated));
@@ -310,6 +576,11 @@ function createAdminService({
         }
         const dryRun = body.dryRun === true;
         const result = await createBackup({ kind: "manual", dryRun });
+        if (!dryRun) auditMutation(request, authorized, {
+          action: "backup.create",
+          resource: `backup:${result.fileName}`,
+          after: { fileName: result.fileName, size: result.size },
+        });
         events.add({ kind: "backup", message: dryRun ? "Backup dry-run completed" : "Manual backup created" });
         sendJson(response, dryRun ? 200 : 201, result);
       } catch (error) {
@@ -429,6 +700,11 @@ function createAdminService({
           throw Object.assign(new Error("Webhook secret must be a non-empty string"), { statusCode: 400 });
         }
         const result = await updateWebhookConfig({ enabled, url: webhookUrl, secret: submittedSecret });
+        auditMutation(request, authorized, {
+          action: "webhook.update",
+          resource: "webhook:configuration",
+          after: publicWebhook(result),
+        });
         events.add({ kind: "config", message: "Webhook configuration updated" });
         sendJson(response, 200, publicWebhook(result));
       } catch (error) {
@@ -458,6 +734,11 @@ function createAdminService({
           scope.location = body.location;
         }
         const result = await clearProxyCache(scope);
+        auditMutation(request, authorized, {
+          action: "proxy-cache.clear",
+          resource: scope.site ? `proxy-cache:${scope.site}` : "proxy-cache:all",
+          after: { scope, result },
+        });
         events.add({ kind: "proxy-cache", message: scope.site ? `Proxy cache cleared: ${scope.site}` : "Proxy cache cleared" });
         sendJson(response, 200, result);
       } catch (error) {
@@ -634,9 +915,17 @@ function createAdminService({
       }
     } else if (request.method === "POST" && ["/api/tunnel/start", "/api/tunnel/stop"].includes(url.pathname)) {
       try {
+        const before = tunnel.status();
         if (url.pathname.endsWith("start")) await tunnel.start();
         else await tunnel.stop();
-        events.add({ kind: "tunnel", message: `Tunnel ${url.pathname.endsWith("start") ? "started" : "stopped"}` });
+        const action = url.pathname.endsWith("start") ? "start" : "stop";
+        auditMutation(request, authorized, {
+          action: `tunnel.${action}`,
+          resource: "tunnel:cloudflare",
+          before,
+          after: tunnel.status(),
+        });
+        events.add({ kind: "tunnel", message: `Tunnel ${action === "start" ? "started" : "stopped"}` });
         sendJson(response, 200, tunnel.status());
       } catch (error) {
         sendJson(response, 503, { error: error.message });
