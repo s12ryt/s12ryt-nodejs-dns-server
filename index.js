@@ -24,6 +24,17 @@ function requireHttps(value, label) {
   return url.href;
 }
 
+function nativeBindingKey({
+  abi = process.versions.modules,
+  platform = process.platform,
+  arch = process.arch,
+} = {}) {
+  if (!/^\d+$/.test(String(abi)) || !/^[a-z0-9]+$/i.test(platform) || !/^[a-z0-9]+$/i.test(arch)) {
+    throw new BootstrapValidationError("Native binding platform is invalid");
+  }
+  return `node-v${abi}-${platform}-${arch}`;
+}
+
 function validateManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(manifest.version || "")) {
     throw new BootstrapValidationError("Runtime manifest version is invalid");
@@ -31,12 +42,26 @@ function validateManifest(manifest) {
   if (!manifest.runtime || !/^[a-f0-9]{64}$/i.test(manifest.runtime.sha256 || "")) {
     throw new BootstrapValidationError("Runtime manifest SHA-256 is invalid");
   }
+  if (!manifest.nativeBindings || typeof manifest.nativeBindings !== "object" || Array.isArray(manifest.nativeBindings)) {
+    throw new BootstrapValidationError("Runtime manifest native bindings are invalid");
+  }
+  const nativeBindings = Object.fromEntries(Object.entries(manifest.nativeBindings).map(([key, asset]) => {
+    if (!/^node-v\d+-[a-z0-9]+-[a-z0-9]+$/i.test(key)
+      || !asset || !/^[a-f0-9]{64}$/i.test(asset.sha256 || "")) {
+      throw new BootstrapValidationError("Runtime manifest native binding is invalid");
+    }
+    return [key, {
+      url: requireHttps(asset.url, `Native binding ${key} URL`),
+      sha256: asset.sha256.toLowerCase(),
+    }];
+  }));
   return {
     version: manifest.version,
     runtime: {
       url: requireHttps(manifest.runtime.url, "Runtime URL"),
       sha256: manifest.runtime.sha256.toLowerCase(),
     },
+    nativeBindings,
   };
 }
 
@@ -55,13 +80,19 @@ async function atomicWrite(filePath, data) {
 async function verifiedCache(directory) {
   try {
     const metadata = JSON.parse(await fsp.readFile(path.join(directory, "active.json"), "utf8"));
+    const bindingKey = nativeBindingKey();
     if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(metadata.version || "")
       || metadata.file !== `runtime-${metadata.version}.cjs`
-      || !/^[a-f0-9]{64}$/i.test(metadata.sha256 || "")) return null;
+      || !/^[a-f0-9]{64}$/i.test(metadata.sha256 || "")
+      || metadata.nativeBinding?.key !== bindingKey
+      || metadata.nativeBinding?.file !== `better-sqlite3-${bindingKey}.node`
+      || !/^[a-f0-9]{64}$/i.test(metadata.nativeBinding?.sha256 || "")) return null;
     const runtimePath = path.join(directory, metadata.file);
-    const data = await fsp.readFile(runtimePath);
-    if (sha256(data) !== metadata.sha256.toLowerCase()) return null;
-    return { path: runtimePath, version: metadata.version, source: "cache" };
+    const nativeBindingPath = path.join(directory, metadata.nativeBinding.file);
+    const [data, nativeBinding] = await Promise.all([fsp.readFile(runtimePath), fsp.readFile(nativeBindingPath)]);
+    if (sha256(data) !== metadata.sha256.toLowerCase()
+      || sha256(nativeBinding) !== metadata.nativeBinding.sha256.toLowerCase()) return null;
+    return { path: runtimePath, nativeBindingPath, version: metadata.version, source: "cache" };
   } catch {
     return null;
   }
@@ -85,6 +116,9 @@ async function resolveDownloadedRuntime({
   let manifest;
   try {
     manifest = validateManifest(await fetchJson(fetchImpl, safeManifestUrl));
+    const bindingKey = nativeBindingKey();
+    const nativeAsset = manifest.nativeBindings[bindingKey];
+    if (!nativeAsset) throw new Error(`No compatible native binding for ${bindingKey}`);
     const response = await fetchImpl(manifest.runtime.url, {
       headers: { accept: "application/javascript", "user-agent": "s12-dns-bootstrap" },
       signal: AbortSignal.timeout(120000),
@@ -92,15 +126,26 @@ async function resolveDownloadedRuntime({
     if (!response.ok) throw new Error(`Runtime download returned HTTP ${response.status}`);
     const runtime = Buffer.from(await response.arrayBuffer());
     if (sha256(runtime) !== manifest.runtime.sha256) throw new Error("Runtime SHA-256 verification failed");
+    const nativeResponse = await fetchImpl(nativeAsset.url, {
+      headers: { accept: "application/octet-stream", "user-agent": "s12-dns-bootstrap" },
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!nativeResponse.ok) throw new Error(`Native binding download returned HTTP ${nativeResponse.status}`);
+    const nativeBinding = Buffer.from(await nativeResponse.arrayBuffer());
+    if (sha256(nativeBinding) !== nativeAsset.sha256) throw new Error("Native binding SHA-256 verification failed");
     const file = `runtime-${manifest.version}.cjs`;
+    const nativeFile = `better-sqlite3-${bindingKey}.node`;
     const runtimePath = path.join(directory, file);
+    const nativeBindingPath = path.join(directory, nativeFile);
     await atomicWrite(runtimePath, runtime);
+    await atomicWrite(nativeBindingPath, nativeBinding);
     await atomicWrite(path.join(directory, "active.json"), `${JSON.stringify({
       version: manifest.version,
       sha256: manifest.runtime.sha256,
       file,
+      nativeBinding: { key: bindingKey, sha256: nativeAsset.sha256, file: nativeFile },
     }, null, 2)}\n`);
-    return { path: runtimePath, version: manifest.version, source: "download" };
+    return { path: runtimePath, nativeBindingPath, version: manifest.version, source: "download" };
   } catch (error) {
     if (error instanceof BootstrapValidationError) throw error;
     return verifiedCache(directory);
@@ -269,12 +314,42 @@ async function launch() {
   const localEntry = path.join(__dirname, "src", "main.js");
   if (fs.existsSync(localEntry)) return require(localEntry).start();
   const runtime = await resolveDownloadedRuntime();
-  if (runtime) return require(runtime.path).start();
+  if (runtime) {
+    globalThis.__S12_SQLITE_NATIVE_BINDING__ = runtime.nativeBindingPath;
+    return require(runtime.path).start();
+  }
   return startFallback();
 }
 
+function installShutdownHandlers(application, {
+  processRef = process,
+  output = (message) => console.error(message),
+} = {}) {
+  if (!application || typeof application.close !== "function") throw new Error("Application close handler is required");
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await application.close();
+      processRef.exitCode = 0;
+    } catch (error) {
+      output(`S12 DNS Server failed to stop after ${signal}: ${error.message}`);
+      processRef.exitCode = 1;
+    }
+  };
+  processRef.once("SIGTERM", shutdown);
+  processRef.once("SIGINT", shutdown);
+  return () => {
+    processRef.removeListener("SIGTERM", shutdown);
+    processRef.removeListener("SIGINT", shutdown);
+  };
+}
+
 if (require.main === module) {
-  launch().catch((error) => {
+  launch().then((application) => {
+    installShutdownHandlers(application);
+  }).catch((error) => {
     console.error(`S12 DNS Server failed to start: ${error.message}`);
     process.exitCode = 1;
   });
@@ -284,7 +359,9 @@ module.exports = {
   BootstrapValidationError,
   DEFAULT_MANIFEST_URL,
   atomicWrite,
+  installShutdownHandlers,
   launch,
+  nativeBindingKey,
   resolveDownloadedRuntime,
   startFallback,
   validateManifest,
