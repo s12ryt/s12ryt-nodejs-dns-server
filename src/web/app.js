@@ -2,7 +2,19 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const state = { csrf: null, config: null, status: null, tunnel: null, events: [], selectedDomain: null };
+const state = {
+  csrf: null,
+  config: null,
+  status: null,
+  tunnel: null,
+  events: [],
+  selectedDomain: null,
+  metricWindow: "24h",
+  metricHistory: [],
+  webhookJobs: [],
+  backups: [],
+  backupPreview: null,
+};
 const titles = { overview: "系統總覽", records: "DNS 與網域", routes: "代理站台", tunnel: "Cloudflare Tunnel", events: "事件日誌" };
 const serviceNames = { dns: "DNS", doh: "DoH", proxy: "Proxy", admin: "Admin" };
 const eventKinds = { auth: "驗證", config: "設定", dns: "DNS", proxy: "代理", "proxy-cache": "代理快取", tunnel: "Tunnel", "tunnel-error": "Tunnel" };
@@ -38,6 +50,17 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
   const text = await response.text();
   const body = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error(body?.error || `Request failed with HTTP ${response.status}`);
+  return body;
+}
+
+async function rawApi(path, options = {}) {
+  const headers = { accept: "application/json", ...options.headers };
+  if (state.csrf && !["GET", "HEAD"].includes(options.method || "GET")) headers["x-csrf-token"] = state.csrf;
+  const response = await fetch(path, { ...options, headers });
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   if (!response.ok) throw new Error(body?.error || `Request failed with HTTP ${response.status}`);
   return body;
 }
@@ -270,6 +293,58 @@ function renderEvents() {
   $("#events-list").innerHTML = eventRows(state.events);
 }
 
+function metricLabels(labels) {
+  const entries = Object.entries(labels || {});
+  return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(" · ") : "無標籤";
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return "未知容量";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 ** 2)).toFixed(1)} MiB`;
+}
+
+function renderBackups() {
+  $("#backups-summary").textContent = `${state.backups.length} 份`;
+  const preview = $("#backup-preview");
+  preview.hidden = !state.backupPreview;
+  preview.innerHTML = state.backupPreview ? `<strong>將包含 ${state.backupPreview.files.length} 個檔案</strong><p>${state.backupPreview.files.map(escapeHtml).join(" · ")}</p>` : "";
+  $("#backups-list").innerHTML = state.backups.length ? state.backups.map((backup) => `<article class="data-row backup-row" data-backup-file="${escapeHtml(backup.fileName)}"><div class="grow"><strong>${escapeHtml(backup.fileName)}</strong><small>${escapeHtml(formatBytes(backup.size))} · ${escapeHtml(formatTimestamp(backup.modifiedAt))}</small></div><div class="row-actions"><button class="secondary" type="button" data-backup-download="${escapeHtml(backup.fileName)}">下載</button><button class="secondary" type="button" data-backup-restore="${escapeHtml(backup.fileName)}">還原</button><button class="danger-button" type="button" data-backup-delete="${escapeHtml(backup.fileName)}">刪除</button></div></article>`).join("") : empty("目前沒有伺服器備份。");
+  animateRows($("#backups-list"));
+}
+
+function renderObservability() {
+  $$('[data-metric-window]').forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.metricWindow === state.metricWindow)));
+  const history = $("[data-testid='metric-history']");
+  history.innerHTML = state.metricHistory.length ? state.metricHistory.map((sample) => `<article class="data-row metric-history-row"><div class="grow"><strong>${escapeHtml(sample.metric)}</strong><small>${escapeHtml(metricLabels(sample.labels))}</small></div><strong class="metric-value">${escapeHtml(sample.value)}</strong></article>`).join("") : empty("此時間範圍尚無持久化指標。");
+  const webhook = state.config.observability?.webhook || { enabled: false, url: "", hasSecret: false };
+  $("#webhook-url").value = webhook.url || "";
+  $("#webhook-enabled").checked = webhook.enabled === true;
+  $("#webhook-secret-state").textContent = webhook.hasSecret ? "已安全儲存" : "尚未儲存密鑰";
+  $("#webhook-jobs-summary").textContent = `${state.webhookJobs.length} 筆`;
+  $("#webhook-jobs").innerHTML = state.webhookJobs.length ? state.webhookJobs.map((job) => `<article class="data-row webhook-job" data-testid="webhook-job-${escapeHtml(job.id)}"><div class="grow"><strong>${escapeHtml(job.eventType)}</strong><small>${escapeHtml(job.id)} · 嘗試 ${escapeHtml(job.attempts)} 次${job.lastError ? ` · ${escapeHtml(job.lastError)}` : ""}</small><time datetime="${escapeHtml(job.createdAt)}">${escapeHtml(formatTimestamp(job.createdAt))}</time></div><span class="state-chip ${job.state === "delivered" ? "active" : job.state === "dead-letter" ? "danger" : "inactive"}">${escapeHtml(job.state)}</span>${job.state === "dead-letter" ? `<button class="secondary" type="button" data-webhook-retry="${escapeHtml(job.id)}">重新傳送</button>` : ""}</article>`).join("") : empty("目前沒有 Webhook 傳送工作。");
+  animateRows(history);
+  animateRows($("#webhook-jobs"));
+  renderBackups();
+}
+
+async function loadMetricHistory(window = state.metricWindow) {
+  state.metricWindow = window;
+  state.metricHistory = await api(`/api/observability/metrics?window=${encodeURIComponent(window)}`);
+  renderObservability();
+}
+
+async function loadWebhookJobs() {
+  state.webhookJobs = await api("/api/observability/webhooks");
+  renderObservability();
+}
+
+async function loadBackups() {
+  state.backups = await api("/api/backups");
+  renderBackups();
+}
+
 function setView(viewName, { focus = true } = {}) {
   $$(".nav-button").forEach((button) => {
     const active = button.dataset.view === viewName;
@@ -289,11 +364,20 @@ function renderAll() {
   renderRoutes();
   renderTunnel();
   renderEvents();
+  renderObservability();
 }
 
 async function loadApplication() {
-  const [config, status, tunnel, events] = await Promise.all([api("/api/config"), api("/api/status"), api("/api/tunnel"), api("/api/events")]);
-  Object.assign(state, { config: { domains: [], ...config }, status, tunnel, events, selectedDomain: null });
+  const [config, status, tunnel, events, metricHistory, webhookJobs, backups] = await Promise.all([
+    api("/api/config"),
+    api("/api/status"),
+    api("/api/tunnel"),
+    api("/api/events"),
+    api("/api/observability/metrics?window=24h"),
+    api("/api/observability/webhooks"),
+    api("/api/backups"),
+  ]);
+  Object.assign(state, { config: { domains: [], ...config }, status, tunnel, events, selectedDomain: null, metricWindow: "24h", metricHistory, webhookJobs, backups, backupPreview: null });
   renderAll();
   setView("overview", { focus: false });
   $("#loading").hidden = true;
@@ -968,6 +1052,178 @@ $("#refresh-events").addEventListener("click", async () => {
     showToast("事件已更新");
   } catch (error) { showToast(error.message, true); }
   finally { setBusy(button, false); }
+});
+
+$("#metric-window").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-metric-window]");
+  if (!button || button.dataset.metricWindow === state.metricWindow) return;
+  $$('[data-metric-window]').forEach((candidate) => { candidate.disabled = true; });
+  try {
+    await loadMetricHistory(button.dataset.metricWindow);
+  } catch (error) { showToast(error.message, true); }
+  finally { $$('[data-metric-window]').forEach((candidate) => { candidate.disabled = false; }); }
+});
+
+$("#webhook-config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = event.submitter;
+  const error = $(".form-message", form);
+  const url = form.elements.url.value.trim();
+  const secret = form.elements.secret.value;
+  if (!secret) {
+    error.textContent = "請輸入新的 Webhook secret";
+    error.hidden = false;
+    return;
+  }
+  if (form.elements.enabled.checked && !url.startsWith("https://")) {
+    error.textContent = "啟用 Webhook 時 URL 必須使用 HTTPS";
+    error.hidden = false;
+    return;
+  }
+  error.hidden = true;
+  setBusy(button, true, "儲存中…");
+  try {
+    const webhook = await api("/api/observability/webhook", { method: "PUT", body: { enabled: form.elements.enabled.checked, url, secret } });
+    state.config.observability.webhook = webhook;
+    form.elements.secret.value = "";
+    renderObservability();
+    showToast("Webhook 設定已更新");
+  } catch (requestError) {
+    error.textContent = requestError.message;
+    error.hidden = false;
+  } finally { setBusy(button, false); }
+});
+
+$("#refresh-webhooks").addEventListener("click", async (event) => {
+  setBusy(event.currentTarget, true, "更新中…");
+  try {
+    await loadWebhookJobs();
+    showToast("Webhook 傳送狀態已更新");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(event.currentTarget, false); }
+});
+
+$("#webhook-jobs").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-webhook-retry]");
+  if (!button) return;
+  setBusy(button, true, "排程中…");
+  try {
+    const updated = await api(`/api/observability/webhooks/${encodeURIComponent(button.dataset.webhookRetry)}/retry`, { method: "POST" });
+    state.webhookJobs = state.webhookJobs.map((job) => job.id === updated.id ? updated : job);
+    renderObservability();
+    showToast("Webhook 已重新排程");
+  } catch (error) { showToast(error.message, true); }
+});
+
+$("#refresh-backups").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "更新中…");
+  try {
+    await loadBackups();
+    showToast("備份清單已更新");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+$("#preview-backup").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "檢查中…");
+  try {
+    state.backupPreview = await api("/api/backups", { method: "POST", body: { dryRun: true } });
+    renderBackups();
+    showToast("備份內容預覽已完成");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+$("#create-backup").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "建立中…");
+  try {
+    await api("/api/backups", { method: "POST", body: { dryRun: false } });
+    await loadBackups();
+    showToast("敏感備份已建立");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+function uploadBackupFileName() {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  return `s12-upload-${timestamp}.zip`;
+}
+
+$("#import-backup").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const input = $("#backup-upload");
+  const file = input.files[0];
+  if (!file) return showToast("請先選擇 ZIP 備份", true);
+  setBusy(button, true, "匯入中…");
+  try {
+    await rawApi("/api/backups/upload", { method: "POST", headers: { "content-type": "application/zip", "x-backup-filename": uploadBackupFileName() }, body: file });
+    input.value = "";
+    await loadBackups();
+    showToast("外部備份已驗證並匯入");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+$("#backups-list").addEventListener("click", (event) => {
+  const download = event.target.closest("[data-backup-download]");
+  if (download) {
+    const anchor = document.createElement("a");
+    anchor.href = `/api/backups/${encodeURIComponent(download.dataset.backupDownload)}/download`;
+    anchor.download = download.dataset.backupDownload;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    return;
+  }
+  const restore = event.target.closest("[data-backup-restore]");
+  if (restore) {
+    const fileName = restore.dataset.backupRestore;
+    openModal({
+      title: "還原備份",
+      eyebrow: "DISASTER RECOVERY",
+      content: `<div class="confirm-copy"><p>將驗證 <strong>${escapeHtml(fileName)}</strong> 的 manifest、檔案雜湊及 schema。正式還原會短暫停止公開服務。</p></div><p class="backup-validation" role="status"></p><p class="modal-error form-message error" role="alert" hidden></p><div class="modal-actions"><button class="secondary" type="button" data-modal-cancel>取消</button><button class="secondary" type="button" data-backup-validate>驗證備份</button><button class="danger-button" type="button" data-backup-apply>進入維護模式並還原</button></div>`,
+      initialFocus: "[data-modal-cancel]",
+    });
+    $("[data-modal-cancel]", $("#modal-body")).addEventListener("click", closeModal);
+    $("[data-backup-validate]", $("#modal-body")).addEventListener("click", async (validationEvent) => {
+      const button = validationEvent.currentTarget;
+      setBusy(button, true, "驗證中…");
+      try {
+        await api(`/api/backups/${encodeURIComponent(fileName)}/restore`, { method: "POST", body: { dryRun: true } });
+        $(".backup-validation", $("#modal-body")).textContent = "備份驗證通過";
+      } catch (error) { modalError(error.message); }
+      finally { setBusy(button, false); }
+    });
+    $("[data-backup-apply]", $("#modal-body")).addEventListener("click", async (restoreEvent) => {
+      const button = restoreEvent.currentTarget;
+      setBusy(button, true, "還原中…");
+      try {
+        await api(`/api/backups/${encodeURIComponent(fileName)}/restore`, { method: "POST", body: { dryRun: false } });
+        closeModal();
+        await loadApplication();
+        showToast("備份已還原");
+      } catch (error) { modalError(error.message); setBusy(button, false); }
+    });
+    return;
+  }
+  const deletion = event.target.closest("[data-backup-delete]");
+  if (deletion) {
+    const fileName = deletion.dataset.backupDelete;
+    openConfirm({
+      title: "刪除備份",
+      description: `<p>確定要永久刪除 <strong>${escapeHtml(fileName)}</strong>？此操作無法復原。</p>`,
+      onConfirm: async () => {
+        await api(`/api/backups/${encodeURIComponent(fileName)}`, { method: "DELETE" });
+        state.backups = state.backups.filter((backup) => backup.fileName !== fileName);
+        renderBackups();
+        showToast("備份已刪除");
+      },
+    });
+  }
 });
 
 function applyTheme(theme) {

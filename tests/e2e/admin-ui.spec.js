@@ -25,6 +25,7 @@ test.beforeAll(async () => {
   for (const name of ["dns", "doh", "proxy", "admin"]) {
     current[name] = { ...current[name], host: "127.0.0.1", port: 0 };
   }
+  current.observability.metrics = { ...current.observability.metrics, host: "127.0.0.1", port: 0 };
   current.domains = [
     { name: "example.test", enabled: true, defaultTtl: 300, note: "父網域" },
     { name: "child.example.test", enabled: true, defaultTtl: 300, note: "子網域" },
@@ -69,6 +70,23 @@ test.beforeAll(async () => {
     output: (line) => { setupToken = line.split(": ").at(-1); },
   });
   await runtime.start();
+  const now = new Date().toISOString();
+  runtime.components.storage.recordMetricSamples([{
+    recordedAt: now,
+    metric: "dns_queries_total",
+    labels: { source: "custom", type: "A" },
+    value: 7,
+  }]);
+  runtime.components.storage.enqueueWebhook({
+    id: "ui-dead-letter",
+    eventType: "upstream-error",
+    payload: { upstream: "Cloudflare" },
+    state: "dead-letter",
+    attempts: 3,
+    nextAttemptAt: now,
+    createdAt: now,
+    lastError: "simulated delivery failure",
+  });
   baseUrl = `http://127.0.0.1:${runtime.status().services.admin.port}`;
   browserOriginServer = http.createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -100,7 +118,7 @@ test.describe.serial("管理介面", () => {
     await page.getByRole("button", { name: "建立管理員" }).click();
     await expect(page.getByRole("heading", { name: "系統總覽" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "核心服務皆已就緒" })).toBeVisible();
-    await expect(page.getByTestId("service-readiness")).toHaveText("4 / 4");
+    await expect(page.getByTestId("service-readiness")).toHaveText("5 / 5");
     await expect(page.getByRole("button", { name: "系統總覽" })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#recent-events").getByText("管理員設定完成", { exact: true })).toBeVisible();
 
@@ -134,6 +152,80 @@ test.describe.serial("管理介面", () => {
     const message = parseMessage(Buffer.from(result.body));
     expect(message.flags.rcode).toBe(0);
     expect(message.answers[0].value).toBe("chatgpt.com");
+  });
+
+  test("可觀測性頁顯示歷史指標並管理 Webhook 重送", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "事件日誌" }).click();
+    await expect(page.getByRole("heading", { name: "可觀測性" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "24 小時" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("metric-history")).toContainText("dns_queries_total");
+    await expect(page.getByTestId("metric-history")).toContainText("7");
+    await page.getByRole("button", { name: "7 天" }).click();
+    await expect(page.getByRole("button", { name: "7 天" })).toHaveAttribute("aria-pressed", "true");
+
+    await page.getByLabel("Webhook URL").fill("https://alerts.example.test/s12");
+    await page.getByLabel("Webhook secret").fill("ui-owner-secret");
+    await page.getByLabel("啟用 Webhook").check();
+    await page.getByRole("button", { name: "儲存 Webhook" }).click();
+    await expect(page.getByLabel("Webhook secret")).toHaveValue("");
+    await expect(page.getByTestId("webhook-secret-state")).toHaveText("已安全儲存");
+    await expect(page.locator("body")).not.toContainText("ui-owner-secret");
+
+    const deadJob = page.getByTestId("webhook-job-ui-dead-letter");
+    await expect(deadJob).toContainText("dead-letter");
+    await deadJob.getByRole("button", { name: "重新傳送" }).click();
+    await expect(deadJob).toContainText("pending");
+  });
+
+  test("可觀測性頁可預覽、建立、匯入、驗證及刪除敏感備份", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "事件日誌" }).click();
+    await expect(page.getByRole("heading", { name: "備份與還原" })).toBeVisible();
+    await expect(page.getByTestId("backup-sensitive-warning")).toContainText("明文");
+    await expect(page.getByTestId("backup-sensitive-warning")).toContainText("密碼");
+    await expect(page.getByTestId("backup-sensitive-warning")).toContainText("Token");
+
+    const previewResponsePromise = page.waitForResponse((response) => response.url().endsWith("/api/backups") && response.request().method() === "POST");
+    await page.getByRole("button", { name: "預覽備份內容" }).click();
+    const previewResponse = await previewResponsePromise;
+    expect(previewResponse.status()).toBe(200);
+    await expect(page.getByTestId("backup-preview")).toContainText("config.json");
+    await expect(page.getByTestId("backup-preview")).toContainText("admin.json");
+    await expect(page.getByTestId("backup-preview")).toContainText("operations.sqlite");
+    await expect(page.getByTestId("backup-preview")).not.toContainText("proxy-cache");
+
+    await page.getByRole("button", { name: "建立備份" }).click();
+    const manualBackup = page.locator("[data-backup-file^='s12-manual-']").first();
+    await expect(manualBackup).toBeVisible();
+    const manualFileName = await manualBackup.getAttribute("data-backup-file");
+    expect(manualFileName).toMatch(/^s12-manual-\d{8}T\d{6}Z\.zip$/);
+
+    const downloadPromise = page.waitForEvent("download");
+    await manualBackup.getByRole("button", { name: "下載" }).click();
+    const download = await downloadPromise;
+    const externalArchive = path.join(directory, "external-upload.zip");
+    await download.saveAs(externalArchive);
+
+    await page.getByLabel("匯入外部 ZIP 備份").setInputFiles(externalArchive);
+    await page.getByRole("button", { name: "匯入備份" }).click();
+    const uploadedBackup = page.locator("[data-backup-file^='s12-upload-']").first();
+    await expect(uploadedBackup).toBeVisible();
+    const uploadedFileName = await uploadedBackup.getAttribute("data-backup-file");
+    expect(uploadedFileName).toMatch(/^s12-upload-\d{8}T\d{6}Z\.zip$/);
+
+    await uploadedBackup.getByRole("button", { name: "還原" }).click();
+    const restoreModal = page.getByRole("dialog", { name: "還原備份" });
+    await expect(restoreModal).toContainText(uploadedFileName);
+    await restoreModal.getByRole("button", { name: "驗證備份" }).click();
+    await expect(restoreModal).toContainText("備份驗證通過");
+    await restoreModal.getByRole("button", { name: "取消" }).click();
+
+    await uploadedBackup.getByRole("button", { name: "刪除" }).click();
+    const deleteModal = page.getByRole("dialog", { name: "刪除備份" });
+    await expect(deleteModal).toContainText(uploadedFileName);
+    await deleteModal.getByRole("button", { name: "確認刪除" }).click();
+    await expect(page.locator(`[data-backup-file='${uploadedFileName}']`)).toHaveCount(0);
   });
 
   test("DNS 與網域工作區提供完整 CRUD、自建 modal 與診斷", async ({ page }) => {

@@ -89,7 +89,46 @@
         <div class="tunnel-layout"><section class="panel tunnel-state"><span id="tunnel-indicator" class="large-indicator"></span><p class="eyebrow">CURRENT STATE</p><h3 id="tunnel-state">未知</h3><p id="tunnel-version" class="muted"></p><div class="button-row"><button id="tunnel-start" class="primary" type="button">啟動 Tunnel</button><button id="tunnel-stop" class="secondary" type="button">停止 Tunnel</button></div></section><section class="panel tunnel-token-panel" aria-labelledby="tunnel-token-title"><p class="eyebrow">CREDENTIAL</p><h3 id="tunnel-token-title">Token 設定</h3><strong id="tunnel-token-source" class="credential-status">尚未設定 Token</strong><p id="tunnel-token-note" class="muted"></p><form id="tunnel-token-form" class="tunnel-token-form" novalidate><label>Cloudflare Tunnel token<input id="tunnel-token" name="token" type="password" autocomplete="new-password" spellcheck="false"></label><div class="button-row"><button id="tunnel-token-save" class="primary" type="submit">儲存 Token</button><button id="tunnel-token-clear" class="danger-button" type="button">清除已儲存 Token</button></div></form></section><section class="panel tunnel-logs-panel"><h3>最近輸出</h3><pre id="tunnel-logs" class="logs">尚無輸出</pre></section></div>
       </section>
 
-      <section id="view-events" class="view" hidden><div class="section-heading"><div><p class="eyebrow">MEMORY ONLY</p><div class="title-row"><h2>事件日誌</h2><span id="events-summary" class="count-badge">0 筆</span></div><p class="muted">最多保留最近 500 筆，重新啟動後清除。</p></div><button id="refresh-events" class="secondary" type="button">重新整理</button></div><div id="events-list" class="data-list"></div></section>
+      <section id="view-events" class="view" hidden>
+        <div class="section-heading"><div><p class="eyebrow">OPERATIONS</p><h2>可觀測性</h2><p class="muted">檢視持久化流量彙總、Webhook 告警狀態與即時事件。</p></div></div>
+        <div class="observability-grid">
+          <section class="panel metric-history-panel" aria-labelledby="metric-history-title">
+            <div class="section-heading"><div><p class="eyebrow">SQLITE HISTORY</p><h3 id="metric-history-title">歷史指標</h3></div><div id="metric-window" class="segmented-control" aria-label="指標時間範圍"><button type="button" data-metric-window="24h" aria-pressed="true">24 小時</button><button type="button" data-metric-window="7d" aria-pressed="false">7 天</button><button type="button" data-metric-window="30d" aria-pressed="false">30 天</button></div></div>
+            <div class="data-list" data-testid="metric-history"></div>
+          </section>
+          <section class="panel webhook-config-panel" aria-labelledby="webhook-config-title">
+            <p class="eyebrow">SIGNED ALERTS</p><h3 id="webhook-config-title">Webhook 設定</h3><p class="muted">事件以 HMAC 簽章傳送；密鑰儲存後不會再顯示。</p>
+            <form id="webhook-config-form" class="webhook-form" novalidate>
+              <label>Webhook URL<input id="webhook-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://alerts.example.com/s12"></label>
+              <label>Webhook secret<input id="webhook-secret" name="secret" type="password" autocomplete="new-password" spellcheck="false"></label>
+              <label class="check-field"><input id="webhook-enabled" name="enabled" type="checkbox">啟用 Webhook</label>
+              <strong id="webhook-secret-state" class="credential-status" data-testid="webhook-secret-state">尚未儲存密鑰</strong>
+              <p class="form-message error" hidden></p>
+              <button id="save-webhook" class="primary" type="submit">儲存 Webhook</button>
+            </form>
+          </section>
+          <section class="panel webhook-jobs-panel" aria-labelledby="webhook-jobs-title">
+            <div class="section-heading"><div><p class="eyebrow">DELIVERY QUEUE</p><div class="title-row"><h3 id="webhook-jobs-title">Webhook 傳送</h3><span id="webhook-jobs-summary" class="count-badge">0 筆</span></div></div><button id="refresh-webhooks" class="secondary" type="button">重新整理</button></div>
+            <div id="webhook-jobs" class="data-list"></div>
+          </section>
+          <section class="panel backups-panel" aria-labelledby="backups-title">
+            <div class="section-heading"><div><p class="eyebrow">DISASTER RECOVERY</p><div class="title-row"><h3 id="backups-title">備份與還原</h3><span id="backups-summary" class="count-badge">0 份</span></div></div><button id="refresh-backups" class="secondary" type="button">重新整理</button></div>
+            <div class="sensitive-warning" data-testid="backup-sensitive-warning" role="note"><strong>最高敏感資料</strong><p>備份以明文包含管理密碼雜湊、Tunnel Token、設定、SQLite 與完整操作資料。下載後必須以最高權限保護。</p></div>
+            <div class="backup-toolbar">
+              <button id="preview-backup" class="secondary" type="button">預覽備份內容</button>
+              <button id="create-backup" class="primary" type="button">建立備份</button>
+              <label class="file-field">匯入外部 ZIP 備份<input id="backup-upload" type="file" accept="application/zip,.zip"></label>
+              <button id="import-backup" class="secondary" type="button">匯入備份</button>
+            </div>
+            <div id="backup-preview" class="backup-preview" data-testid="backup-preview" hidden></div>
+            <div id="backups-list" class="data-list"></div>
+          </section>
+          <section class="panel memory-events-panel" aria-labelledby="events-title">
+            <div class="section-heading"><div><p class="eyebrow">MEMORY ONLY</p><div class="title-row"><h3 id="events-title">即時事件</h3><span id="events-summary" class="count-badge">0 筆</span></div><p class="muted">最多保留最近 500 筆，重新啟動後清除。</p></div><button id="refresh-events" class="secondary" type="button">重新整理</button></div>
+            <div id="events-list" class="data-list"></div>
+          </section>
+        </div>
+      </section>
     </main>
   </div>
 
