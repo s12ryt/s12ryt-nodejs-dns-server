@@ -10,10 +10,10 @@ function createDnsService({ resolver, host = "0.0.0.0", port = 5354 } = {}) {
   let udp;
   let tcp;
 
-  async function answer(wire) {
+  async function answer(wire, context) {
     if (!wire.length || wire.length > MAX_DNS_MESSAGE) return null;
     try {
-      return await resolver.resolve(wire);
+      return await resolver.resolve(wire, context);
     } catch {
       return null;
     }
@@ -24,7 +24,7 @@ function createDnsService({ resolver, host = "0.0.0.0", port = 5354 } = {}) {
       if (udp || tcp) throw new Error("DNS service is already started");
       udp = dgram.createSocket(host.includes(":") ? "udp6" : "udp4");
       udp.on("message", async (wire, remote) => {
-        const response = await answer(wire);
+        const response = await answer(wire, { transport: "udp", clientIp: remote.address });
         if (response) udp.send(response, remote.port, remote.address);
       });
       await new Promise((resolve, reject) => {
@@ -43,7 +43,7 @@ function createDnsService({ resolver, host = "0.0.0.0", port = 5354 } = {}) {
             if (pending.length < length + 2) return;
             const wire = pending.subarray(2, length + 2);
             pending = pending.subarray(length + 2);
-            const response = await answer(wire);
+            const response = await answer(wire, { transport: "tcp", clientIp: socket.remoteAddress });
             if (response && !socket.destroyed) {
               const prefix = Buffer.alloc(2);
               prefix.writeUInt16BE(response.length);

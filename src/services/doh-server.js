@@ -76,7 +76,11 @@ function createDohService({ resolver, host = "0.0.0.0", port = 8053 } = {}) {
             response.writeHead(400).end();
             return;
           }
-          const result = await resolver.resolve(wire);
+          const result = await resolver.resolve(wire, {
+            transport: "doh",
+            method: request.method,
+            clientIp: request.socket.remoteAddress,
+          });
           response.setHeader("content-type", "application/dns-message");
           response.setHeader("cache-control", `max-age=${minimumAnswerTtl(result)}`);
           response.writeHead(200).end(result);

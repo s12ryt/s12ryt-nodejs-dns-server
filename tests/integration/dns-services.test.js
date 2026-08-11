@@ -51,7 +51,18 @@ function tcpQuery(port, wire) {
 }
 
 test("UDP and TCP DNS listeners resolve the same custom record", async (t) => {
-  const service = createDnsService({ resolver: resolverFixture(), host: "127.0.0.1", port: 0 });
+  const contexts = [];
+  const resolver = resolverFixture();
+  const service = createDnsService({
+    resolver: {
+      resolve(wire, context) {
+        contexts.push(context);
+        return resolver.resolve(wire, context);
+      },
+    },
+    host: "127.0.0.1",
+    port: 0,
+  });
   await service.start();
   t.after(() => service.close());
   const port = service.address().udp.port;
@@ -64,10 +75,23 @@ test("UDP and TCP DNS listeners resolve the same custom record", async (t) => {
     assert.equal(parsed.answers[0].address, "192.0.2.80");
     assert.equal(parsed.flags.aa, true);
   }
+  assert.deepEqual(contexts.map((context) => context.transport), ["udp", "tcp"]);
+  assert.equal(contexts.every((context) => context.clientIp === "127.0.0.1"), true);
 });
 
 test("DoH listener supports RFC 8484 GET and POST and rejects invalid requests", async (t) => {
-  const service = createDohService({ resolver: resolverFixture(), host: "127.0.0.1", port: 0 });
+  const contexts = [];
+  const resolver = resolverFixture();
+  const service = createDohService({
+    resolver: {
+      resolve(wire, context) {
+        contexts.push(context);
+        return resolver.resolve(wire, context);
+      },
+    },
+    host: "127.0.0.1",
+    port: 0,
+  });
   await service.start();
   t.after(() => service.close());
   const base = `http://127.0.0.1:${service.address().port}/dns-query`;
@@ -123,4 +147,6 @@ test("DoH listener supports RFC 8484 GET and POST and rejects invalid requests",
   });
   assert.equal(missing.status, 404);
   assert.equal(missing.headers.get("access-control-allow-origin"), null);
+  assert.deepEqual(contexts.map((context) => context.method), ["GET", "POST"]);
+  assert.equal(contexts.every((context) => context.transport === "doh" && context.clientIp === "127.0.0.1"), true);
 });
