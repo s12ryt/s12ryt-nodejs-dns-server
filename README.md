@@ -6,7 +6,7 @@
 
 - 可點選的自訂網域工作區，以及 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄的完整新增、編輯、停用與刪除流程。
 - CNAME 完整答案鏈、Cloudflare/Google DoH 依序容錯、定期上游健康探測，以及有界 LRU/TTL 快取。
-- 同埠 UDP/TCP DNS 與 `/dns-query` DoH GET/POST。
+- 同埠 UDP/TCP DNS，以及支援 GET、POST、瀏覽器 CORS preflight 的 `/dns-query` DoH。
 - 具 Host alias、path location、rewrite、header、安全限制、多上游、持久快取、壓縮與 WebSocket 的 Nginx 式反向代理。
 - 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
 - 響應式深淺色管理介面，提供 DNS 診斷、核心服務健康摘要、全自建對話元件、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
@@ -31,6 +31,8 @@ npm start
 | 管理 UI/API | `http://0.0.0.0:8081` |
 
 設定會原子寫入 `data/config.json`。可從管理介面修改服務位址、快取、上游、網域、DNS 記錄及代理站台。
+
+`/dns-query` 允許任何網頁來源進行無憑證的跨來源 DoH 查詢，回傳 `Access-Control-Allow-Origin: *`，並接受 `OPTIONS` preflight。非 `/dns-query` 路徑不開放 CORS；管理 API 的認證與 CSRF 邊界不受影響。
 
 ## 單檔啟動
 
@@ -81,6 +83,8 @@ node index.js
 - 子網域依最長後綴歸類；停用父網域會暫停整棵子網域及所屬 DNS／代理，但保留各子項原本的啟用狀態。
 - 網域重新命名與整棵刪除會原子更新或移除相關 DNS 名稱、CNAME 目標、代理 Host 及 aliases；衝突時不會部分寫入。
 - DNS 診斷支援 A、AAAA、CNAME、MX、TXT、NS、SRV，顯示 rcode、命中來源與完整答案鏈，不會修改設定。
+- DNS 名稱必須精確匹配。若記錄為 `awa.example.com CNAME target.example`，查詢 `example.com` 不會自動猜測 `awa`，沒有根記錄時回 NXDOMAIN 是預期結果。
+- 管理介面新增或修改已啟用記錄後會立即熱更新解析器並原子持久化，不需要重新啟動 S12。
 
 ## 代理站台
 
