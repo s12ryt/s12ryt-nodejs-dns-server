@@ -154,6 +154,47 @@ test("runtime starts and closes the non-blocking upstream health monitor", async
   assert.equal(lifecycle.includes("close:health"), true);
 });
 
+test("runtime applies and persists CNAME updates without restarting services", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const lifecycle = [];
+  const serviceFactories = Object.fromEntries(
+    ["dns", "doh", "proxy", "admin"].map((name) => [name, () => fakeService(name, lifecycle)]),
+  );
+  const runtime = createRuntime({
+    directory,
+    output: () => {},
+    serviceFactories,
+    healthMonitorFactory: () => ({ start() {}, close() {} }),
+    tunnel: {
+      status: () => ({ available: false, state: "stopped", logs: [] }),
+      stop: async () => {},
+    },
+  });
+  await runtime.start();
+
+  const updated = runtime.config.get();
+  updated.domains = [{ name: "16516565.tw", enabled: true, defaultTtl: 300, note: "" }];
+  updated.records = [{
+    name: "awa.16516565.tw",
+    type: "CNAME",
+    value: "chatgpt.com",
+    ttl: 300,
+    enabled: true,
+  }];
+  await runtime.config.update(updated);
+
+  const diagnosis = await runtime.components.resolver.diagnose("awa.16516565.tw", "CNAME");
+  assert.equal(diagnosis.rcode, "NOERROR");
+  assert.deepEqual(diagnosis.sources, ["custom"]);
+  assert.equal(diagnosis.answers[0].value, "chatgpt.com");
+  assert.equal(lifecycle.filter((entry) => entry.startsWith("start:")).length, 4);
+
+  const persisted = await new ConfigStore({ directory }).load();
+  assert.deepEqual(persisted.records, updated.records);
+  await runtime.close();
+});
+
 test("runtime keeps core services available when automatic Tunnel startup fails", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
