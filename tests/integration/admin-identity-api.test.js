@@ -138,3 +138,65 @@ test("owner reads, verifies and exports audit records for identity mutations", a
   assert.match(exported.headers.get("content-disposition"), /s12-audit-20260812T120000Z\.ndjson/);
   assert.match(await exported.text(), /"action":"role.create"/);
 });
+
+test("only a cookie owner can create and download a redacted diagnostic bundle", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-diagnostic-"));
+  const storage = new SqliteStore({ directory });
+  storage.open();
+  const auth = new IdentityManager({ directory, storage });
+  await auth.load();
+  const config = new ConfigStore({ directory });
+  await config.load();
+  const diagnosticPath = path.join(directory, "s12-diagnostic-20260812T120000Z.zip");
+  await fs.writeFile(diagnosticPath, "verified-diagnostic-zip");
+  let creates = 0;
+  const service = createAdminService({
+    auth,
+    config,
+    createDiagnosticBundle: async () => {
+      creates += 1;
+      return {
+        fileName: path.basename(diagnosticPath),
+        path: diagnosticPath,
+        size: (await fs.stat(diagnosticPath)).size,
+      };
+    },
+    tunnel: { status: () => ({ available: false, state: "stopped", logs: [] }) },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  await service.start();
+  t.after(async () => {
+    await service.close();
+    storage.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${service.address().port}`;
+  assert.equal((await fetch(`${base}/api/diagnostics`, { method: "POST" })).status, 401);
+  const setupToken = auth.createSetupToken();
+  const setup = await request(base, "/api/setup", {
+    method: "POST",
+    body: { token: setupToken, password: "correct horse battery" },
+  });
+  const cookie = setup.headers.get("set-cookie").split(";", 1)[0];
+  const csrf = setup.body.csrf;
+  const apiToken = auth.createApiToken(setup.body.identity, {
+    name: "diagnostic attempt",
+    scopes: ["audit:read"],
+  });
+  assert.equal((await fetch(`${base}/api/diagnostics`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${apiToken.token}` },
+  })).status, 403);
+  assert.equal(creates, 0);
+
+  const downloaded = await fetch(`${base}/api/diagnostics`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf },
+  });
+  assert.equal(downloaded.status, 200);
+  assert.equal(downloaded.headers.get("content-type"), "application/zip");
+  assert.match(downloaded.headers.get("content-disposition"), /s12-diagnostic-20260812T120000Z\.zip/);
+  assert.equal(await downloaded.text(), "verified-diagnostic-zip");
+  assert.equal(creates, 1);
+});

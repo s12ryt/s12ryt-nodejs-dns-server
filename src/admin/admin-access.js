@@ -15,6 +15,7 @@ function accessForRequest(method, pathname) {
   if (path === "/api/events") return { permission: "logs:read" };
   if (path === "/api/audit/export") return { permission: "audit:read", ownerOnly: true };
   if (path === "/api/audit" || path === "/api/audit/verify") return { permission: "audit:read" };
+  if (path === "/api/diagnostics" && verb === "POST") return { permission: "audit:read", ownerOnly: true };
   if (path === "/api/v2/users" && verb === "GET") return { permission: "users:read" };
   if (path === "/api/v2/roles") return { permission: verb === "GET" ? "roles:read" : "roles:write" };
   if (path === "/api/v2/dns/zones") return { permission: verb === "GET" ? "dns:read" : "dns:write" };

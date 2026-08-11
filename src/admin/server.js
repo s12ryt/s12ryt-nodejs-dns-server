@@ -211,6 +211,7 @@ function createAdminService({
   restoreBackup,
   listPolicySubscriptions,
   refreshPolicySubscription,
+  createDiagnosticBundle,
   events = new EventLog(),
   status = () => ({}),
   staticDirectory = path.join(__dirname, "..", "web"),
@@ -509,6 +510,13 @@ function createAdminService({
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
         }).end(exported.body);
+      }
+    } else if (request.method === "POST" && url.pathname === "/api/diagnostics") {
+      if (typeof createDiagnosticBundle !== "function") {
+        sendJson(response, 501, { error: "Diagnostic bundle is unavailable" });
+      } else {
+        const descriptor = await createDiagnosticBundle();
+        await sendBackupDownload(response, descriptor);
       }
     } else if (request.method === "GET" && url.pathname === "/api/config") {
       sendJson(response, 200, publicConfig(config.get()));
