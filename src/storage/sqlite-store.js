@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const Database = require("better-sqlite3");
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const SQLITE_APPLICATION_ID = 0x53313244;
 
 const DEFAULT_MIGRATIONS = Object.freeze([
@@ -61,6 +61,30 @@ const DEFAULT_MIGRATIONS = Object.freeze([
       database.exec("ALTER TABLE webhook_jobs ADD COLUMN delivered_at TEXT");
     },
   },
+  {
+    version: 3,
+    name: "proxy health history",
+    up(database) {
+      database.exec(`
+        CREATE TABLE proxy_health_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          recorded_at TEXT NOT NULL,
+          site TEXT NOT NULL,
+          location TEXT NOT NULL,
+          upstream TEXT NOT NULL,
+          fallback INTEGER NOT NULL,
+          healthy INTEGER NOT NULL,
+          status_code INTEGER,
+          latency_ms REAL,
+          error TEXT,
+          previous_state TEXT NOT NULL,
+          state TEXT NOT NULL
+        );
+        CREATE INDEX proxy_health_events_lookup
+          ON proxy_health_events(site, recorded_at DESC);
+      `);
+    },
+  },
 ]);
 
 function nativeBindingKey() {
@@ -104,6 +128,22 @@ function webhookFromRow(row) {
     createdAt: row.createdAt,
     lastError: row.lastError,
     deliveredAt: row.deliveredAt,
+  };
+}
+
+function proxyHealthFromRow(row) {
+  return {
+    checkedAt: row.checkedAt,
+    site: row.site,
+    location: row.location,
+    upstream: row.upstream,
+    fallback: Boolean(row.fallback),
+    healthy: Boolean(row.healthy),
+    statusCode: row.statusCode,
+    latencyMs: row.latencyMs,
+    error: row.error,
+    previousState: row.previousState,
+    state: row.state,
   };
 }
 
@@ -240,6 +280,73 @@ class SqliteStore {
       labels: JSON.parse(row.labelsJson),
       value: row.value,
     }));
+  }
+
+  recordProxyHealthEvent(event) {
+    this.#requireOpen();
+    if (!event || !validIsoTimestamp(event.checkedAt)
+      || typeof event.site !== "string" || !event.site
+      || typeof event.location !== "string" || !event.location
+      || typeof event.upstream !== "string" || !event.upstream
+      || typeof event.fallback !== "boolean" || typeof event.healthy !== "boolean"
+      || (event.statusCode !== null && event.statusCode !== undefined
+        && (!Number.isInteger(event.statusCode) || event.statusCode < 100 || event.statusCode > 599))
+      || (event.latencyMs !== null && event.latencyMs !== undefined
+        && (!Number.isFinite(event.latencyMs) || event.latencyMs < 0))
+      || (event.error !== null && event.error !== undefined && typeof event.error !== "string")
+      || typeof event.previousState !== "string" || !event.previousState
+      || typeof event.state !== "string" || !event.state) {
+      throw new TypeError("Proxy health event is invalid");
+    }
+    const cutoff = new Date(this.now().getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const write = this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO proxy_health_events (
+          recorded_at, site, location, upstream, fallback, healthy, status_code, latency_ms,
+          error, previous_state, state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        event.checkedAt,
+        event.site,
+        event.location,
+        event.upstream,
+        event.fallback ? 1 : 0,
+        event.healthy ? 1 : 0,
+        event.statusCode ?? null,
+        event.latencyMs ?? null,
+        event.error || null,
+        event.previousState,
+        event.state,
+      );
+      this.database.prepare("DELETE FROM proxy_health_events WHERE recorded_at < ?").run(cutoff);
+    });
+    write();
+    return proxyHealthFromRow(this.database.prepare(`
+      SELECT recorded_at AS checkedAt, site, location, upstream, fallback, healthy,
+        status_code AS statusCode, latency_ms AS latencyMs, error,
+        previous_state AS previousState, state
+      FROM proxy_health_events WHERE id = last_insert_rowid()
+    `).get());
+  }
+
+  queryProxyHealthHistory({ since, until, site, limit = 500 } = {}) {
+    this.#requireOpen();
+    if (!validIsoTimestamp(since) || !validIsoTimestamp(until) || Date.parse(since) >= Date.parse(until)) {
+      throw new RangeError("Proxy health time window is invalid");
+    }
+    if (site !== undefined && (typeof site !== "string" || !site)) throw new TypeError("Proxy health site is invalid");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new RangeError("Proxy health limit is invalid");
+    const select = `
+      SELECT recorded_at AS checkedAt, site, location, upstream, fallback, healthy,
+        status_code AS statusCode, latency_ms AS latencyMs, error,
+        previous_state AS previousState, state
+      FROM proxy_health_events
+      WHERE recorded_at >= ? AND recorded_at < ?
+    `;
+    const rows = site === undefined
+      ? this.database.prepare(`${select} ORDER BY recorded_at DESC, id DESC LIMIT ?`).all(since, until, limit)
+      : this.database.prepare(`${select} AND site = ? ORDER BY recorded_at DESC, id DESC LIMIT ?`).all(since, until, site, limit);
+    return rows.map(proxyHealthFromRow);
   }
 
   enqueueWebhook(job) {

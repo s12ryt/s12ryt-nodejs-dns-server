@@ -33,7 +33,7 @@ test("SQLite store creates the production schema with WAL and integrity guards",
   assert.deepEqual(
     store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
       .map((row) => row.name),
-    ["audit_entries", "config_versions", "metric_samples", "schema_migrations", "webhook_jobs"],
+    ["audit_entries", "config_versions", "metric_samples", "proxy_health_events", "schema_migrations", "webhook_jobs"],
   );
 });
 
@@ -138,6 +138,69 @@ test("SQLite store persists metric samples and aggregates bounded time windows",
     { metric: "proxy_errors_total", labels: {}, value: 1 },
   ]);
   assert.throws(() => store.recordMetricSamples([{ metric: "bad", labels: {}, value: Number.NaN }]), /sample/i);
+});
+
+test("SQLite store retains bounded proxy health history with transition details", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-sqlite-proxy-health-"));
+  const store = new SqliteStore({ directory, now: () => new Date("2026-08-12T12:00:00.000Z") });
+  t.after(() => {
+    store.close();
+    return fs.rm(directory, { recursive: true, force: true });
+  });
+  store.open();
+
+  store.database.prepare(`
+    INSERT INTO proxy_health_events (
+      recorded_at, site, location, upstream, fallback, healthy, status_code, latency_ms,
+      error, previous_state, state
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("2026-07-01T00:00:00.000Z", "old.example.test", "prefix:/", "old", 0, 1, 200, 1, null, "unknown", "healthy");
+  store.recordProxyHealthEvent({
+    checkedAt: "2026-08-12T10:00:00.000Z",
+    site: "app.example.test",
+    location: "prefix:/",
+    upstream: "primary-a",
+    fallback: false,
+    healthy: false,
+    statusCode: 503,
+    latencyMs: 18.5,
+    error: "maintenance",
+    previousState: "healthy",
+    state: "unhealthy",
+  });
+  store.recordProxyHealthEvent({
+    checkedAt: "2026-08-12T11:00:00.000Z",
+    site: "fallback.example.test",
+    location: "exact:/health",
+    upstream: "fallback-a",
+    fallback: true,
+    healthy: true,
+    statusCode: 204,
+    latencyMs: 4,
+    previousState: "unknown",
+    state: "healthy",
+  });
+  const history = store.queryProxyHealthHistory({
+    since: "2026-08-12T00:00:00.000Z",
+    until: "2026-08-13T00:00:00.000Z",
+    site: "app.example.test",
+  });
+  assert.deepEqual(history, [{
+    checkedAt: "2026-08-12T10:00:00.000Z",
+    site: "app.example.test",
+    location: "prefix:/",
+    upstream: "primary-a",
+    fallback: false,
+    healthy: false,
+    statusCode: 503,
+    latencyMs: 18.5,
+    error: "maintenance",
+    previousState: "healthy",
+    state: "unhealthy",
+  }]);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM proxy_health_events WHERE site = 'old.example.test'").get().count, 0);
+  assert.throws(() => store.recordProxyHealthEvent({ site: "bad" }), /proxy health/i);
+  assert.throws(() => store.queryProxyHealthHistory({ since: "bad", until: "also-bad" }), /time window/i);
 });
 
 test("SQLite store persists webhook jobs and applies due and state updates", async (t) => {
