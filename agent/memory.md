@@ -59,3 +59,8 @@
 - 回歸結果：Node 單元／整合 74/74、Playwright 6/6、ESLint、npm audit、23 個 src JS LSP 均通過；v0.1.4 build runtime SHA-256 為 `8663391dbf140a31e4092f8c0b92e86cb11b569660ed91f357d9ba5890454fbf`。
 - 推送 7 個需求、UI、版本與文件原子提交，建立 `v0.1.4` tag；GitHub Actions run `31475147999` 的 Node 20/22/24、Playwright 與 Release jobs 全部成功。
 - `v0.1.4` Release 發布三項資產；全新暫存目錄初始只含 Release `index.js`，冷啟動後管理 API 回應 HTTP 200，active cache 版本為 0.1.4，下載 runtime、manifest 與 Release SHA-256 相符；程序與暫存目錄已清理。
+- 調查公開 `https://doh.czy-cf.eu.cc/dns-query`：OPTIONS 回 405 且無 CORS headers；從其他 origin 的真實瀏覽器 fetch 被 CORS 阻擋，但 curl 的 DNS wire 請求可取得 HTTP 200，定位為瀏覽器跨來源政策缺漏。
+- 釐清設定中的 CNAME owner 是 `awa.16516565.tw`，不是根 `16516565.tw`；根名稱 NXDOMAIN 符合 DNS 精確名稱語意，正確 owner 在程序重啟後可解析。
+- 先建立完整 runtime、fallback 及真實瀏覽器 CORS RED；新增 `/dns-query` 專用 `Access-Control-Allow-Origin: *`、GET/POST/OPTIONS methods、Content-Type/Accept headers，且不開放其他路徑。
+- 補強 runtime CNAME hot update characterization：ConfigStore 更新後同一程序立即由 custom source 回 NOERROR，設定重新載入仍保留，未發現需要重啟的通用程式缺陷。
+- 回歸結果：Node 單元／整合 75/75、Playwright 7/7、ESLint、npm audit、23 個 src JS LSP 均通過；v0.1.5 build runtime SHA-256 為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`。
