@@ -39,9 +39,39 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
 
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production container
+        run: docker build --tag s12-dns-server:test .
+      - name: Start read-only container
+        run: docker run --detach --name s12-dns-test --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m s12-dns-server:test
+      - name: Wait for container health
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            status=$(docker inspect --format '{{.State.Health.Status}}' s12-dns-test)
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs s12-dns-test
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs s12-dns-test
+          exit 1
+      - name: Verify graceful stop
+        run: docker stop --time 30 s12-dns-test
+      - name: Clean up container
+        if: always()
+        run: docker rm --force s12-dns-test >/dev/null 2>&1 || true
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, e2e]
+    needs: [test, e2e, deployment]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +80,12 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Download verified Linux native bindings
+        run: node scripts/native-bindings.js .release-native
+      - name: Build production release
+        env:
+          S12_NATIVE_BINDINGS_DIRECTORY: .release-native
+        run: npm run build
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,4 +95,75 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" --generate-notes
           fi
           gh release upload "${GITHUB_REF_NAME}" \
-            dist/index.js dist/runtime.cjs dist/manifest.json --clobber
+            dist/index.js dist/runtime.cjs dist/manifest.json \
+            dist/better-sqlite3-*.node --clobber
+
+  release-verification:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify index-only cold start and cached rollback
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          pid=""
+          cleanup() {
+            if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+              kill -TERM "$pid" >/dev/null 2>&1 || true
+              wait "$pid" || true
+            fi
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          cd "$work"
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern index.js
+          INITIAL_FILES=$(find . -maxdepth 1 -type f | wc -l)
+          test "$INITIAL_FILES" -eq 1
+
+          node index.js >cold-start.log 2>&1 &
+          pid=$!
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:8081/api/bootstrap >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$pid" >/dev/null 2>&1; then
+              cat cold-start.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8081/api/bootstrap >/dev/null
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const active = JSON.parse(fs.readFileSync("data/runtime/active.json", "utf8"));
+          const expectedVersion = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+          if (active.version !== expectedVersion) throw new Error(`Expected ${expectedVersion}, received ${active.version}`);
+          if (active.nativeBinding?.key !== "node-v115-linux-x64") throw new Error("Unexpected native binding key");
+          NODE
+          kill -TERM "$pid"
+          wait "$pid"
+          pid=""
+
+          APP_MANIFEST_URL=https://127.0.0.1:9/manifest.json node index.js >cached-rollback.log 2>&1 &
+          pid=$!
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8081/api/bootstrap >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$pid" >/dev/null 2>&1; then
+              cat cached-rollback.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8081/api/bootstrap >/dev/null
+          kill -TERM "$pid"
+          wait "$pid"
+          pid=""
