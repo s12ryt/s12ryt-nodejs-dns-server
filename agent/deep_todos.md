@@ -102,4 +102,4 @@
 - [x] 完成 REST API v2 OpenAPI、標準錯誤、分頁／過濾、主要 DNS／proxy／Tunnel／backup／audit 資源，以及冪等寫入。
 - [x] 完成 API v1 唯讀相容入口，以及 config、backup、Webhook、proxy cache、Tunnel與身分 mutation 審計。
 - [x] 完成 202 項單元／整合測試、14 項 E2E、lint、audit、LSP 與 v0.4.0 build 驗證；並修復備份建立結果缺少 archive size 導致審計失敗的回歸；runtime SHA-256 為 `20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。
-- [ ] 發布並驗證 v0.4.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback。
+- [x] 發布並驗證 v0.4.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback；tag CI run `31536728312` 全綠，runtime SHA-256 為 `20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。

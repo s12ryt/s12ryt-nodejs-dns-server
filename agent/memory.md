@@ -99,3 +99,7 @@
 - 完成idempotency schema/service、REST API v2 OpenAPI 3.1、標準錯誤、request ID、分頁／過濾，以及users／roles／DNS zones／proxy sites／Tunnel／backups／audit資源；寫入以Idempotency-Key保證重播與衝突偵測。
 - 新增明確`/api/v1`唯讀相容入口並附Deprecation與successor link；未版本化管理UI內部API維持相容。
 - 完成身分與存取、一次性邀請／API token、撤銷與審計UI；發布前完整E2E發現備份建立成功後回傳缺少size，導致audit canonical JSON遇到undefined而API回400。先以BackupManager單元測試取得RED，再回傳實際ZIP stat size，修復後Node 202/202、Playwright14/14、ESLint、npm audit 0、43個src JS LSP 0；runtime SHA-256為`20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`，Release尚待建立。
+- 推送16個v0.4身分、RBAC、API v2、審計、冪等性、UI、版本與文件原子提交；main CI run `31536577929` 的Node 20／22／24、Playwright14項與Debian唯讀容器health／graceful stop全部成功。
+- 建立`v0.4.0` tag指向`563f1a66e40996ebdff968b6f21b9f165e2a2f80`；tag CI run `31536728312`的Node矩陣、E2E、Docker部署、六組Linux native binding、Release及發布後驗收全部成功。
+- `v0.4.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.4.0`，包含index、runtime、manifest與ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。
+- 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
