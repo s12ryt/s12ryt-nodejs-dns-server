@@ -93,3 +93,9 @@
 - 建立`v0.3.0` tag指向`b341f029edaf331aacbb2a6003121349b233df05`；tag CI run `31526833987`的Node矩陣、E2E、Docker部署、六組Linux native binding、Release及發布後驗收全部成功。
 - `v0.3.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.3.0`，包含index、runtime、manifest與ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。
 - 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
+- 進入 v0.4.0 後，以 TDD 完成 SQLite schema v6、固定／自訂 RBAC、多使用者、邀請、持久 session、scoped API token 與 legacy admin migration。
+- 完成集中管理授權：Cookie與Bearer共用角色權限，API token另受scope限制；完整敏感備份與日誌維持owner-only且不可由自訂角色擴權。
+- 完成SHA-256防竄改審計鏈、365日保留、遞迴敏感欄位去敏、篩選／分頁／驗證／owner NDJSON匯出；高風險身分、設定、備份、Webhook、proxy cache與Tunnel mutation均入鏈。
+- 完成idempotency schema/service、REST API v2 OpenAPI 3.1、標準錯誤、request ID、分頁／過濾，以及users／roles／DNS zones／proxy sites／Tunnel／backups／audit資源；寫入以Idempotency-Key保證重播與衝突偵測。
+- 新增明確`/api/v1`唯讀相容入口並附Deprecation與successor link；未版本化管理UI內部API維持相容。
+- 完成身分與存取、一次性邀請／API token、撤銷與審計UI；發布前完整E2E發現備份建立成功後回傳缺少size，導致audit canonical JSON遇到undefined而API回400。先以BackupManager單元測試取得RED，再回傳實際ZIP stat size，修復後Node 202/202、Playwright14/14、ESLint、npm audit 0、43個src JS LSP 0；runtime SHA-256為`20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`，Release尚待建立。
