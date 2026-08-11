@@ -11,6 +11,18 @@ const yazl = require("yazl");
 
 const { BackupManager } = require("../../src/backup/manager");
 
+function descriptor(name, value) {
+  const content = Buffer.from(value);
+  return {
+    content,
+    manifest: {
+      path: name,
+      size: content.length,
+      sha256: require("node:crypto").createHash("sha256").update(content).digest("hex"),
+    },
+  };
+}
+
 function writeArchive(filePath, entries) {
   return new Promise((resolve, reject) => {
     const zip = new yazl.ZipFile();
@@ -208,6 +220,75 @@ test("backup restore supports validation-only and applies a verified archive in 
     "reload:application",
     "exit:maintenance",
   ]);
+});
+
+test("backup restore preflights v0.2 through v0.4 data before entering maintenance", async (t) => {
+  const { directory, storage } = await fixture(t);
+  storage.status = () => ({ schemaVersion: 6 });
+  const lifecycle = [];
+  const validated = [];
+  const manager = new BackupManager({
+    directory,
+    storage,
+    validateConfiguration(value, manifest) {
+      if (value.schemaVersion > 3) throw new Error("Configuration schema is newer than this runtime");
+      validated.push([manifest.applicationVersion, "config", value.schemaVersion]);
+    },
+    async validateDatabase(content, manifest) {
+      if (!content.equals(Buffer.from(`sqlite-${manifest.databaseSchemaVersion}`))) throw new Error("SQLite backup is corrupt");
+      validated.push([manifest.applicationVersion, "database", manifest.databaseSchemaVersion]);
+    },
+    maintenance: { enter: async () => lifecycle.push("enter") },
+  });
+
+  for (const [applicationVersion, configSchema, databaseSchema] of [
+    ["0.2.0", 1, 2],
+    ["0.3.0", 2, 3],
+    ["0.4.0", 3, 6],
+  ]) {
+    const config = descriptor("config.json", JSON.stringify({ schemaVersion: configSchema }));
+    const database = descriptor("operations.sqlite", `sqlite-${databaseSchema}`);
+    const archive = path.join(directory, `${applicationVersion}.zip`);
+    await writeArchive(archive, [
+      ["config.json", config.content],
+      ["operations.sqlite", database.content],
+      ["manifest.json", JSON.stringify({
+        formatVersion: 1,
+        applicationVersion,
+        databaseSchemaVersion: databaseSchema,
+        createdAt: "2026-08-12T03:00:00.000Z",
+        kind: "manual",
+        files: [config.manifest, database.manifest],
+      })],
+    ]);
+    const result = await manager.restore(archive, { dryRun: true });
+    assert.equal(result.dryRun, true);
+  }
+
+  assert.deepEqual(validated, [
+    ["0.2.0", "config", 1], ["0.2.0", "database", 2],
+    ["0.3.0", "config", 2], ["0.3.0", "database", 3],
+    ["0.4.0", "config", 3], ["0.4.0", "database", 6],
+  ]);
+  assert.deepEqual(lifecycle, []);
+
+  const futureConfig = descriptor("config.json", JSON.stringify({ schemaVersion: 99 }));
+  const database = descriptor("operations.sqlite", "sqlite-6");
+  const futureArchive = path.join(directory, "future-config.zip");
+  await writeArchive(futureArchive, [
+    ["config.json", futureConfig.content],
+    ["operations.sqlite", database.content],
+    ["manifest.json", JSON.stringify({
+      formatVersion: 1,
+      applicationVersion: "9.0.0",
+      databaseSchemaVersion: 6,
+      createdAt: "2026-08-12T03:00:00.000Z",
+      kind: "manual",
+      files: [futureConfig.manifest, database.manifest],
+    })],
+  ]);
+  await assert.rejects(manager.restore(futureArchive), /configuration schema is newer/i);
+  assert.deepEqual(lifecycle, []);
 });
 
 test("backup restore rolls every file back when an atomic replacement fails", async (t) => {

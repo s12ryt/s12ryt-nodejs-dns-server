@@ -165,6 +165,8 @@ class BackupManager {
     maintenance = {},
     replaceFile = atomicReplaceFile,
     maxArchiveBytes = MAX_ARCHIVE_BYTES,
+    validateConfiguration = () => {},
+    validateDatabase = async () => {},
   } = {}) {
     if (!storage || typeof storage.backupTo !== "function") throw new TypeError("Backup storage is required");
     if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes < 1 || maxArchiveBytes > MAX_ARCHIVE_BYTES) {
@@ -182,6 +184,11 @@ class BackupManager {
     };
     this.replaceFile = replaceFile;
     this.maxArchiveBytes = maxArchiveBytes;
+    if (typeof validateConfiguration !== "function" || typeof validateDatabase !== "function") {
+      throw new TypeError("Backup validators must be functions");
+    }
+    this.validateConfiguration = validateConfiguration;
+    this.validateDatabase = validateDatabase;
   }
 
   async create({ kind = "manual", dryRun = false } = {}) {
@@ -268,6 +275,16 @@ class BackupManager {
     }
     const extra = Object.keys(entries).filter((name) => name !== "manifest.json" && !declared.has(name));
     if (extra.length > 0) throw new Error(`Backup contains undeclared files: ${extra.join(", ")}`);
+    if (files["config.json"]) {
+      let configuration;
+      try {
+        configuration = JSON.parse(files["config.json"].toString("utf8"));
+      } catch {
+        throw new Error("Backup configuration is invalid JSON");
+      }
+      await this.validateConfiguration(configuration, manifest);
+    }
+    if (files["operations.sqlite"]) await this.validateDatabase(files["operations.sqlite"], manifest);
     return { manifest, files };
   }
 
