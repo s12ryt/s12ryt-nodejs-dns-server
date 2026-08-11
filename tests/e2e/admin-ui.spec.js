@@ -1,5 +1,6 @@
 "use strict";
 
+const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const os = require("node:os");
@@ -247,12 +248,18 @@ test.describe.serial("管理介面", () => {
     await expect(page.locator("#records-list").getByText("outside.test", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("診斷名稱")).toHaveValue("example.test");
 
+    const batchBodies = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/zones/example.test/records/batch") && request.method() === "POST") {
+        batchBodies.push(request.postDataJSON());
+      }
+    });
     await page.getByRole("button", { name: "新增記錄" }).click();
     await expect(page.getByRole("dialog", { name: "新增 DNS 記錄" })).toBeVisible();
     await page.getByLabel("記錄名稱").fill("home");
     await page.getByLabel("記錄值").fill("192.0.2.88");
-    await page.route("**/api/config", async (route) => {
-      if (route.request().method() === "PUT") await new Promise((resolve) => setTimeout(resolve, 250));
+    await page.route("**/api/zones/example.test/records/batch", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
       await route.continue();
     });
     const saveRecord = page.locator("#record-form button[value='default']");
@@ -260,7 +267,7 @@ test.describe.serial("管理介面", () => {
     await expect(saveRecord).toBeDisabled();
     await expect(saveRecord).toHaveText("儲存中…");
     await expect(page.getByText("home.example.test", { exact: true })).toBeVisible();
-    await page.unroute("**/api/config");
+    await page.unroute("**/api/zones/example.test/records/batch");
 
     await page.getByLabel("診斷名稱").fill("home.example.test");
     await page.getByLabel("診斷類型").selectOption("A");
@@ -288,6 +295,10 @@ test.describe.serial("管理介面", () => {
     await expect(recordConfirm).toContainText("192.0.2.88");
     await recordConfirm.getByRole("button", { name: "確認刪除" }).click();
     await expect(page.getByText("edited.example.test", { exact: true })).toHaveCount(0);
+    assert.equal(batchBodies.length, 3);
+    assert.equal(batchBodies[0].create.length, 1);
+    assert.equal(batchBodies[1].update.length, 1);
+    assert.equal(batchBodies[2].delete.length, 1);
 
     await page.getByRole("button", { name: "選擇網域 child.example.test" }).click();
     await expect(page.locator("#records-list").getByText("api.child.example.test", { exact: true })).toBeVisible();
@@ -332,6 +343,110 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByRole("button", { name: "新增記錄" })).toBeDisabled();
   });
 
+  test("Primary Zone 可編輯 SOA、預覽匯入並下載標準 Zone file", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    await page.getByRole("button", { name: "選擇網域 example.test" }).click();
+    const serial = page.getByTestId("zone-serial");
+    await expect(serial).toHaveText(/^\d+$/);
+    const serialBefore = Number(await serial.textContent());
+
+    await page.getByRole("button", { name: "Zone 設定" }).click();
+    const settings = page.getByRole("dialog", { name: "Zone 設定" });
+    await expect(settings).toBeVisible();
+    await settings.getByLabel("主要名稱伺服器").fill("dns1.example.test");
+    await settings.getByLabel("Refresh").fill("7200");
+    await settings.getByRole("button", { name: "儲存 Zone 設定" }).click();
+    await expect(serial).not.toHaveText(String(serialBefore));
+
+    await page.getByRole("button", { name: "匯入 Zone file" }).click();
+    const importer = page.getByRole("dialog", { name: "匯入 Zone file" });
+    const source = [
+      "$ORIGIN example.test.",
+      "$TTL 300",
+      "@ IN SOA dns1.example.test. hostmaster.example.test. (1 7200 600 1209600 300)",
+      "zone-import IN A 192.0.2.123",
+      "",
+    ].join("\n");
+    await importer.getByLabel("Zone file 內容").fill(source);
+    await expect(importer.getByRole("button", { name: "匯入變更" })).toBeDisabled();
+    await importer.getByRole("button", { name: "預覽匯入" }).click();
+    await expect(importer.getByTestId("zone-import-preview")).toContainText("新增 1 筆");
+    await expect(importer.getByRole("button", { name: "匯入變更" })).toBeEnabled();
+    await importer.getByLabel("Zone file 內容").pressSequentially("\n; changed");
+    await expect(importer.getByRole("button", { name: "匯入變更" })).toBeDisabled();
+    await importer.getByRole("button", { name: "預覽匯入" }).click();
+    await importer.getByRole("button", { name: "匯入變更" }).click();
+    await expect(page.locator("#records-list").getByText("zone-import.example.test", { exact: true })).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "匯出 Zone file" }).click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), "example.test.zone");
+    const exported = await fs.readFile(await download.path(), "utf8");
+    assert.match(exported, /^\$ORIGIN example\.test\./m);
+    assert.match(exported, /zone-import 300 IN A 192\.0\.2\.123/);
+    assert.match(exported, /IN SOA dns1\.example\.test\./);
+  });
+
+  test("DNS Policy 可管理本地規則與遠端清單訂閱", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "DNS 與網域" }).click();
+    await expect(page.getByRole("heading", { name: "DNS Policy" })).toBeVisible();
+
+    await page.getByRole("button", { name: "新增本地規則" }).click();
+    const ruleModal = page.getByRole("dialog", { name: "新增 DNS Policy 規則" });
+    await ruleModal.getByLabel("規則識別碼").fill("ui-block");
+    await ruleModal.getByLabel("優先序").fill("5");
+    await ruleModal.getByLabel("名稱比對").selectOption("exact");
+    await ruleModal.getByLabel("網域名稱").fill("blocked.example.test");
+    await ruleModal.getByLabel("查詢類型").fill("A, AAAA");
+    await ruleModal.getByLabel("動作").selectOption("NXDOMAIN");
+    await ruleModal.getByRole("button", { name: "儲存規則" }).click();
+    const rule = page.getByTestId("policy-rule-ui-block");
+    await expect(rule).toContainText("blocked.example.test");
+    await expect(rule).toContainText("NXDOMAIN");
+
+    await rule.getByRole("button", { name: "編輯規則 ui-block" }).click();
+    const editRule = page.getByRole("dialog", { name: "編輯 DNS Policy 規則" });
+    await editRule.getByLabel("動作").selectOption("REFUSED");
+    await editRule.getByRole("button", { name: "儲存規則" }).click();
+    await expect(rule).toContainText("REFUSED");
+
+    await page.getByRole("button", { name: "新增遠端訂閱" }).click();
+    const subscriptionModal = page.getByRole("dialog", { name: "新增 DNS Policy 訂閱" });
+    await subscriptionModal.getByLabel("訂閱識別碼").fill("ui-list");
+    await subscriptionModal.getByLabel("HTTPS 清單 URL").fill("https://lists.example.test/ui.txt");
+    await subscriptionModal.getByLabel("優先序").fill("20");
+    await subscriptionModal.getByLabel("更新間隔（分鐘）").fill("360");
+    await subscriptionModal.getByLabel("動作").selectOption("NXDOMAIN");
+    await subscriptionModal.getByRole("button", { name: "儲存訂閱" }).click();
+    const subscription = page.getByTestId("policy-subscription-ui-list");
+    await expect(subscription).toContainText("等待有效快取");
+
+    await subscription.getByRole("button", { name: "編輯訂閱 ui-list" }).click();
+    const editSubscription = page.getByRole("dialog", { name: "編輯 DNS Policy 訂閱" });
+    await editSubscription.getByLabel("啟用訂閱").uncheck();
+    await editSubscription.getByRole("button", { name: "儲存訂閱" }).click();
+    await expect(subscription).toContainText("已停用");
+
+    await page.route("**/api/dns/policy/subscriptions/ui-list/refresh", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "ui-list", domains: 12, fetchedAt: "2026-08-12T01:00:00.000Z" }),
+    }));
+    await subscription.getByRole("button", { name: "刷新訂閱 ui-list" }).click();
+    await expect(subscription).toContainText("12 個網域");
+
+    await rule.getByRole("button", { name: "刪除規則 ui-block" }).click();
+    await page.getByRole("dialog", { name: "刪除 DNS Policy 規則" }).getByRole("button", { name: "確認刪除" }).click();
+    await expect(page.getByTestId("policy-rule-ui-block")).toHaveCount(0);
+    await subscription.getByRole("button", { name: "刪除訂閱 ui-list" }).click();
+    await page.getByRole("dialog", { name: "刪除 DNS Policy 訂閱" }).getByRole("button", { name: "確認刪除" }).click();
+    await expect(page.getByTestId("policy-subscription-ui-list")).toHaveCount(0);
+    assert.deepEqual(runtime.config.get().dnsPolicy, { rules: [], subscriptions: [] });
+  });
+
   test("代理站台可透過五步精靈建立、編輯、複製、停用及刪除", async ({ page }) => {
     await login(page);
     await page.getByRole("button", { name: "代理站台" }).click();
@@ -339,20 +454,44 @@ test.describe.serial("管理介面", () => {
     const wizard = page.getByRole("dialog", { name: "新增代理站台" });
     await expect(wizard.getByText("步驟 1 / 5", { exact: true })).toBeVisible();
     await page.getByLabel("主要 Host").fill("app.test");
+    await page.getByLabel("啟用維護模式").check();
+    await page.getByLabel("維護 Retry-After（秒）").fill("120");
+    await page.getByLabel("WebSocket 最大連線").fill("25");
+    await page.getByLabel("WebSocket 閒置逾時（毫秒）").fill("45000");
+    await page.getByLabel("排空寬限（毫秒）").fill("15000");
     await page.getByRole("button", { name: "下一步" }).click();
     await expect(wizard.getByText("步驟 2 / 5", { exact: true })).toBeVisible();
     await page.getByLabel("路徑", { exact: true }).fill("/");
     await page.getByRole("button", { name: "下一步" }).click();
-    await page.getByLabel("上游 URL（每行一個）").fill("http://192.0.2.88:9000\nhttp://192.0.2.89:9000");
+    await page.getByLabel("主要上游（id | URL | weight | protocol）").fill("blue | https://192.0.2.88:9443 | 5 | http2\ngreen | http://192.0.2.89:9000 | 1 | http1");
+    await page.getByLabel("備援上游（id | URL | weight | protocol）").fill("fallback | http://192.0.2.90:9000 | 1 | http1");
+    await page.getByLabel("允許不安全方法使用備援").check();
+    await page.getByLabel("健康檢查路徑").fill("/ready");
+    await page.getByLabel("健康檢查間隔（毫秒）").fill("12000");
+    await page.getByLabel("健康檢查逾時（毫秒）").fill("1500");
     await page.getByRole("button", { name: "下一步" }).click();
     await page.getByLabel("Body 限制（MiB）").fill("12");
     await page.getByLabel("啟用代理快取").check();
+    await page.getByLabel("Shadow 上游 URL").fill("http://192.0.2.91:9000");
+    await page.getByLabel("Shadow 取樣率").fill("0.25");
+    await page.getByLabel("Shadow 逾時（毫秒）").fill("800");
     await page.getByRole("button", { name: "下一步" }).click();
     await expect(wizard.getByText("步驟 5 / 5", { exact: true })).toBeVisible();
     await expect(wizard.getByTestId("proxy-review")).toContainText("app.test");
     await page.screenshot({ path: "test-results/admin-proxy-wizard.png", fullPage: true });
     await page.getByRole("button", { name: "建立站台" }).click();
     await expect(page.getByText("app.test", { exact: true })).toBeVisible();
+    const created = runtime.config.get().routes.find(({ host }) => host === "app.test");
+    assert.deepEqual(created.maintenance, { enabled: true, retryAfterSeconds: 120 });
+    assert.deepEqual(created.websocket, { maxConnections: 25, idleTimeoutMs: 45000, drainTimeoutMs: 15000 });
+    assert.equal(created.locations[0].upstreams[0].id, "blue");
+    assert.equal(created.locations[0].upstreams[0].weight, 5);
+    assert.equal(created.locations[0].upstreams[0].protocol, "http2");
+    assert.equal(created.locations[0].upstreams[0].health.path, "/ready");
+    assert.equal(created.locations[0].fallbackUpstreams[0].id, "fallback");
+    assert.equal(created.locations[0].allowUnsafeFallback, true);
+    assert.equal(created.locations[0].shadow.target, "http://192.0.2.91:9000");
+    assert.equal(created.locations[0].shadow.sampleRate, 0.25);
 
     await page.getByRole("button", { name: "編輯代理站台 app.test" }).click();
     await page.getByLabel("主要 Host").fill("edited.app.test");
@@ -370,12 +509,12 @@ test.describe.serial("管理介面", () => {
     await page.getByLabel("啟用站台").check();
     for (let step = 0; step < 4; step += 1) await page.getByRole("button", { name: "下一步" }).click();
     await page.getByRole("button", { name: "建立副本" }).click();
-    await expect(page.getByText("copy.app.test", { exact: true })).toBeVisible();
+    await expect(page.locator("#routes-list").getByText("copy.app.test", { exact: true })).toBeVisible();
     await page.waitForTimeout(250);
     await page.screenshot({ path: "test-results/admin-proxy-sites.png", fullPage: true });
     await page.reload();
     await page.getByRole("button", { name: "代理站台" }).click();
-    await expect(page.getByText("copy.app.test", { exact: true })).toBeVisible();
+    await expect(page.locator("#routes-list").getByText("copy.app.test", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "清除所有代理快取" }).click();
     await page.getByRole("dialog", { name: "清除代理快取" }).getByRole("button", { name: "確認清除" }).click();
@@ -384,6 +523,50 @@ test.describe.serial("管理介面", () => {
     await page.getByRole("button", { name: "刪除代理站台 edited.app.test" }).click();
     await page.getByRole("dialog", { name: "刪除代理站台" }).getByRole("button", { name: "確認刪除" }).click();
     await expect(page.getByText("edited.app.test", { exact: true })).toHaveCount(0);
+  });
+
+  test("代理操作台顯示健康歷史並控制排空與連線", async ({ page }) => {
+    let draining = false;
+    let upstreamDraining = false;
+    const actions = [];
+    const operations = () => ({
+      health: { sites: [{ host: "copy.app.test", draining, locations: [{ key: "prefix:/", upstreams: [{ id: "upstream-0", target: "http://192.0.2.88:9000", activeState: "healthy", state: "healthy", draining: upstreamDraining, latencyMs: 8, statusCode: 204 }], fallbackUpstreams: [] }] }] },
+      draining: { sites: draining ? [{ host: "copy.app.test", draining: true }] : [] },
+      websockets: { sites: [{ site: "copy.app.test", active: 2, accepted: 7, rejected: 1, completed: 4, bytesIn: 120, bytesOut: 420, totalDurationMs: 900 }] },
+    });
+    await page.route("**/api/proxy/operations", async (route) => route.fulfill({ json: operations() }));
+    await page.route("**/api/proxy/health-history?**", async (route) => route.fulfill({ json: [{ recordedAt: "2026-08-12T02:00:00.000Z", site: "copy.app.test", location: "prefix:/", upstream: "upstream-0", healthy: true, state: "healthy", previousState: "unhealthy", statusCode: 204, latencyMs: 8 }] }));
+    await page.route("**/api/proxy/sites/copy.app.test/*", async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      const action = pathname.split("/").at(-1);
+      actions.push(action);
+      draining = action === "drain" ? true : action === "resume" ? false : draining;
+      await route.fulfill({ json: action === "abort" ? { host: "copy.app.test", aborted: 2 } : { host: "copy.app.test", draining } });
+    });
+    await page.route("**/api/proxy/sites/copy.app.test/locations/**", async (route) => {
+      const action = new URL(route.request().url()).pathname.split("/").at(-1);
+      upstreamDraining = action === "drain" ? true : action === "resume" ? false : upstreamDraining;
+      actions.push(`upstream-${action}`);
+      await route.fulfill({ json: { host: "copy.app.test", location: "prefix:/", id: "upstream-0", fallback: false, draining: upstreamDraining } });
+    });
+
+    await login(page);
+    await page.getByRole("button", { name: "代理站台" }).click();
+    await expect(page.getByRole("heading", { name: "代理運行狀態" })).toBeVisible();
+    const site = page.getByTestId("proxy-operation-copy.app.test");
+    await expect(site).toContainText("8 ms");
+    await expect(site).toContainText("WebSocket 2");
+    await expect(page.getByTestId("proxy-health-history")).toContainText("unhealthy → healthy");
+    await site.getByRole("button", { name: "排空 upstream upstream-0" }).click();
+    await expect(site).toContainText("排空中");
+    await site.getByRole("button", { name: "恢復 upstream upstream-0" }).click();
+    await site.getByRole("button", { name: "排空站台 copy.app.test" }).click();
+    await expect(site).toContainText("排空中");
+    await site.getByRole("button", { name: "恢復站台 copy.app.test" }).click();
+    await site.getByRole("button", { name: "中止站台連線 copy.app.test" }).click();
+    await page.getByRole("dialog", { name: "中止代理連線" }).getByRole("button", { name: "確認中止" }).click();
+    await expect(page.getByText("已中止 2 條連線", { exact: true })).toBeVisible();
+    expect(actions).toEqual(["upstream-drain", "upstream-resume", "drain", "resume", "abort"]);
   });
 
   test("Tunnel 確認與主題切換不使用瀏覽器原生對話框", async ({ page }) => {

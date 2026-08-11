@@ -71,16 +71,26 @@
           <div class="domain-detail">
             <section id="domain-selection-empty" class="panel domain-selection-empty"><p class="eyebrow">DNS RECORDS</p><h3>請選擇網域</h3><p class="muted">從左側網域清單或「未分組記錄」開始管理。</p></section>
             <div id="domain-detail-content" class="domain-detail-content" hidden>
-              <section class="panel records-panel"><div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><div class="title-row"><h3 id="selected-domain-title">DNS 記錄</h3><span id="selected-records-summary" class="count-badge">0 筆</span></div><p id="selected-domain-note" class="muted"></p></div></div><div id="records-list" class="data-list"></div></section>
+              <section class="panel records-panel"><div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><div class="title-row"><h3 id="selected-domain-title">DNS 記錄</h3><span id="selected-records-summary" class="count-badge">0 筆</span></div><p id="selected-domain-note" class="muted"></p></div><div id="zone-tools" class="zone-tools" hidden><span class="zone-serial">Serial <strong data-testid="zone-serial">0</strong></span><button id="zone-settings" class="secondary" type="button">Zone 設定</button><button id="zone-import" class="secondary" type="button">匯入 Zone file</button><button id="zone-export" class="secondary" type="button">匯出 Zone file</button></div></div><div id="records-list" class="data-list"></div></section>
               <section class="panel"><div class="section-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>DNS 診斷</h3></div></div><form id="diagnostic-form" class="diagnostic-form" novalidate><label>診斷名稱<input name="name" autocomplete="off" placeholder="home.example.com"></label><label>診斷類型<select name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label><button class="primary" type="submit">執行 DNS 診斷</button><p class="form-message error" role="alert" hidden></p></form><div id="diagnostic-result" class="diagnostic-result" hidden><div><span>RCODE</span><strong data-testid="diagnostic-rcode"></strong></div><div><span>來源</span><strong data-testid="diagnostic-sources"></strong></div><pre data-testid="diagnostic-answers"></pre></div></section>
             </div>
           </div>
         </div>
+        <section class="panel policy-panel" aria-labelledby="policy-title">
+          <div class="section-heading"><div><p class="eyebrow">REQUEST POLICY</p><div class="title-row"><h2 id="policy-title">DNS Policy</h2><span id="policy-summary" class="count-badge">0 項</span></div><p class="muted">依優先序攔截名稱、類型、來源網段與指定時段；本地規則同優先序先於遠端清單。</p></div><div class="button-row compact"><button id="add-policy-rule" class="secondary" type="button">新增本地規則</button><button id="add-policy-subscription" class="primary" type="button">新增遠端訂閱</button></div></div>
+          <div class="policy-grid"><section><div class="subsection-heading"><p class="eyebrow">LOCAL RULES</p><h3>本地規則</h3></div><div id="policy-rules-list" class="data-list"></div></section><section><div class="subsection-heading"><p class="eyebrow">REMOTE LISTS</p><h3>遠端清單</h3></div><div id="policy-subscriptions-list" class="data-list"></div></section></div>
+        </section>
       </section>
 
       <section id="view-routes" class="view" hidden>
         <div class="section-heading"><div><p class="eyebrow">NGINX-STYLE ROUTING</p><div class="title-row"><h2>代理站台</h2><span id="routes-summary" class="count-badge">0 個</span></div><p class="muted">依 Host 與路徑選擇 upstream，支援安全規則、快取與壓縮。</p></div><button id="add-route" class="primary" type="button">新增代理站台</button></div>
         <section class="cache-strip"><div><span>磁碟代理快取</span><strong id="proxy-cache-status">0 B · 0 項</strong></div><button id="clear-proxy-cache" class="secondary" type="button">清除所有代理快取</button></section>
+        <section class="panel proxy-operations-panel" aria-labelledby="proxy-operations-title">
+          <div class="section-heading"><div><p class="eyebrow">LIVE OPERATIONS</p><h3 id="proxy-operations-title">代理運行狀態</h3><p class="muted">檢視主動健康、排空與 WebSocket 連線；健康轉換保存 30 天。</p></div><button id="refresh-proxy-operations" class="secondary" type="button">重新整理</button></div>
+          <div id="proxy-operations-list" class="data-list"></div>
+          <div class="subsection-heading"><p class="eyebrow">RECENT TRANSITIONS</p><h3>最近健康轉換</h3></div>
+          <div class="data-list" data-testid="proxy-health-history"></div>
+        </section>
         <div id="routes-list" class="data-list"></div>
       </section>
 

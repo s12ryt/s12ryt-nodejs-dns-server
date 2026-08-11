@@ -169,6 +169,29 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
 .domain-row strong, .domain-row small { display: block; overflow-wrap: anywhere; }
 .domain-select { display: flex; min-width: 0; min-height: 44px; flex: 1; align-items: center; padding: 0; color: var(--text); background: transparent; border: 0; text-align: left; }
 .domain-select:hover strong { color: var(--primary); }
+.zone-tools { display: flex; max-width: 520px; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.45rem; }
+.zone-serial { padding: 0.35rem 0.55rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; font: 750 0.72rem/1.4 ui-monospace, Consolas, monospace; }
+.zone-serial strong { color: var(--text); }
+.zone-import-preview { padding: 0.8rem; color: var(--success); background: color-mix(in srgb, var(--success) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); border-radius: 6px; font-weight: 800; }
+.policy-panel { margin-top: 1rem; }
+.policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.proxy-operations-panel { margin: 1rem 0; }
+.proxy-operation-site { display: grid; gap: 0.9rem; padding: 1rem; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-soft); }
+.proxy-operation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.proxy-operation-heading small { display: block; margin-top: 0.3rem; color: var(--muted); }
+.proxy-upstream-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.65rem; }
+.proxy-upstream-grid > div { display: grid; gap: 0.2rem; padding: 0.7rem; border-left: 3px solid var(--success); background: var(--surface); }
+.proxy-upstream-grid span, .proxy-upstream-grid small { color: var(--muted); }
+.policy-grid > section { min-width: 0; }
+.policy-grid .subsection-heading { margin-top: 0; }
+.policy-row { align-items: flex-start; }
+.policy-row .record-type { min-width: 52px; }
+.policy-row .grow small + small { margin-top: 0.2rem; color: var(--primary); }
+.policy-action-fields, .policy-schedule-fields { padding: 0.8rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; }
+.weekday-field { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 0.55rem; margin: 0; padding: 0.7rem; border: 1px solid var(--border); border-radius: 5px; }
+.weekday-field legend { padding: 0 0.3rem; color: var(--muted); font-size: 0.78rem; font-weight: 800; }
+.weekday-field label { display: inline-flex; align-items: center; flex-direction: row; gap: 0.3rem; color: var(--text); }
+.weekday-field input { width: 17px; min-height: 17px; margin: 0; accent-color: var(--primary); }
 .diagnostic-form { display: grid; grid-template-columns: minmax(0, 1fr) 130px auto; gap: 0.7rem; align-items: end; }
 .diagnostic-result { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; margin-top: 1rem; }
 .diagnostic-result > div { padding: 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; }
@@ -258,9 +281,12 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
   .observability-grid { grid-template-columns: 1fr; }
   .webhook-jobs-panel, .backups-panel, .memory-events-panel { grid-column: auto; }
   .dns-master-detail { grid-template-columns: 1fr; }
+  .policy-grid { grid-template-columns: 1fr; }
   .domain-master { position: static; }
   .diagnostic-form { grid-template-columns: minmax(0, 1fr) 120px; }
   .diagnostic-form button { grid-column: 1 / -1; }
+  .records-panel > .section-heading { align-items: stretch; flex-direction: column; }
+  .zone-tools { max-width: none; justify-content: flex-start; }
   .tunnel-logs-panel { grid-column: auto; }
   .toast { bottom: 80px; }
 }
@@ -288,6 +314,8 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
   .row-actions { width: 100%; justify-content: flex-end; }
   .domain-row { align-items: flex-start; flex-wrap: wrap; }
   .domain-row .row-actions { width: auto; margin-left: auto; }
+  .zone-tools > button { flex: 1 1 140px; }
+  .policy-panel > .section-heading { align-items: stretch; flex-direction: column; }
   .cache-strip { align-items: stretch; flex-direction: column; }
   .diagnostic-form { grid-template-columns: 1fr; }
   .diagnostic-form button { grid-column: auto; }
