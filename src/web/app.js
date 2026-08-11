@@ -1852,6 +1852,34 @@ $("#export-audit").addEventListener("click", () => {
   anchor.remove();
 });
 
+$("#download-diagnostics").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "產生中…");
+  try {
+    const response = await fetch("/api/diagnostics", {
+      method: "POST",
+      headers: { "x-csrf-token": state.csrf },
+    });
+    if (!response.ok) {
+      let message = `Request failed with HTTP ${response.status}`;
+      try { message = (await response.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const fileName = disposition.match(/filename="([^"]+)"/)?.[1] || "s12-diagnostic.zip";
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    showToast("診斷包已產生");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
 $("#refresh-backups").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   setBusy(button, true, "更新中…");

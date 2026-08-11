@@ -239,6 +239,14 @@ test.describe.serial("管理介面", () => {
     const exported = path.join(directory, "audit-export.ndjson");
     await download.saveAs(exported);
     expect(await fs.readFile(exported, "utf8")).toContain('"action":"role.create"');
+
+    const diagnosticPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "下載診斷包" }).click();
+    const diagnostic = await diagnosticPromise;
+    expect(diagnostic.suggestedFilename()).toMatch(/^s12-diagnostic-\d{8}T\d{6}Z\.zip$/);
+    const diagnosticFile = path.join(directory, "diagnostic.zip");
+    await diagnostic.saveAs(diagnosticFile);
+    expect((await fs.stat(diagnosticFile)).size).toBeGreaterThan(0);
   });
 
   test("可觀測性頁可預覽、建立、匯入、驗證及刪除敏感備份", async ({ page }) => {
