@@ -10,6 +10,7 @@ const {
   CURRENT_SCHEMA_VERSION,
   SQLITE_APPLICATION_ID,
   SqliteStore,
+  createDatabase,
 } = require("../../src/storage/sqlite-store");
 
 async function temporaryDirectory() {
@@ -447,4 +448,49 @@ test("SQLite store creates an online backup that opens independently", async (t)
   restored.open();
   assert.equal(JSON.parse(restored.getConfigVersion(1).configJson).records[0].name, "backup.test");
   restored.close();
+});
+
+test("SQLite store validates backup bytes before restore without leaving temporary files", async (t) => {
+  const directory = await temporaryDirectory();
+  const sourceDirectory = await temporaryDirectory();
+  const source = new SqliteStore({ directory: sourceDirectory });
+  source.open();
+  const backupPath = path.join(directory, "source.sqlite");
+  await source.backupTo(backupPath);
+  source.close();
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  t.after(() => fs.rm(sourceDirectory, { recursive: true, force: true }));
+
+  const store = new SqliteStore({ directory });
+  const valid = await fs.readFile(backupPath);
+  assert.deepEqual(await store.validateBackup(valid, {
+    expectedSchemaVersion: CURRENT_SCHEMA_VERSION,
+  }), {
+    applicationId: SQLITE_APPLICATION_ID,
+    integrity: "ok",
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+  });
+  await assert.rejects(
+    store.validateBackup(valid, { expectedSchemaVersion: CURRENT_SCHEMA_VERSION - 1 }),
+    /schema version does not match/i,
+  );
+
+  const futureDatabase = createDatabase(backupPath);
+  futureDatabase.pragma(`user_version = ${CURRENT_SCHEMA_VERSION + 1}`);
+  futureDatabase.close();
+  await assert.rejects(
+    store.validateBackup(await fs.readFile(backupPath), {
+      expectedSchemaVersion: CURRENT_SCHEMA_VERSION + 1,
+    }),
+    /newer schema version/i,
+  );
+  await assert.rejects(
+    store.validateBackup(Buffer.from("not a sqlite database"), {
+      expectedSchemaVersion: CURRENT_SCHEMA_VERSION,
+    }),
+    /sqlite|database|integrity/i,
+  );
+
+  const remaining = await fs.readdir(directory);
+  assert.deepEqual(remaining, ["source.sqlite"]);
 });

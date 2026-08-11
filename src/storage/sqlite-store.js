@@ -197,11 +197,11 @@ function nativeBindingKey() {
   return `node-v${process.versions.modules}-${process.platform}-${process.arch}`;
 }
 
-function createDatabase(filePath) {
+function createDatabase(filePath, options = {}) {
   const configured = process.env.S12_SQLITE_NATIVE_BINDING || globalThis.__S12_SQLITE_NATIVE_BINDING__;
   const adjacent = path.join(__dirname, `better-sqlite3-${nativeBindingKey()}.node`);
   const nativeBinding = configured || (fs.existsSync(adjacent) ? adjacent : null);
-  return new Database(filePath, nativeBinding ? { nativeBinding } : undefined);
+  return new Database(filePath, nativeBinding ? { ...options, nativeBinding } : options);
 }
 
 function sha256(value) {
@@ -1011,6 +1011,43 @@ class SqliteStore {
     } catch (error) {
       await fsPromises.rm(destination, { force: true }).catch(() => {});
       throw error;
+    }
+  }
+
+  async validateBackup(content, { expectedSchemaVersion } = {}) {
+    if (!Buffer.isBuffer(content) || content.length === 0) {
+      throw new TypeError("SQLite backup content must be a non-empty buffer");
+    }
+    if (!Number.isInteger(expectedSchemaVersion) || expectedSchemaVersion < 0) {
+      throw new TypeError("SQLite backup schema version is invalid");
+    }
+
+    const parent = path.dirname(this.filePath);
+    await fsPromises.mkdir(parent, { recursive: true });
+    const temporaryDirectory = await fsPromises.mkdtemp(path.join(parent, ".backup-validation-"));
+    const temporaryPath = path.join(temporaryDirectory, "operations.sqlite");
+    let database;
+    try {
+      await fsPromises.writeFile(temporaryPath, content, { mode: 0o600 });
+      database = this.databaseFactory(temporaryPath, { readonly: true, fileMustExist: true });
+      const integrity = integrityResult(database.pragma("quick_check"));
+      if (integrity !== "ok") throw new Error(`SQLite backup integrity check failed: ${integrity}`);
+
+      const applicationId = database.pragma("application_id", { simple: true });
+      if (applicationId !== SQLITE_APPLICATION_ID) {
+        throw new Error("SQLite backup belongs to another application");
+      }
+      const schemaVersion = database.pragma("user_version", { simple: true });
+      if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+        throw new Error(`SQLite backup uses newer schema version ${schemaVersion}; this runtime supports ${CURRENT_SCHEMA_VERSION}`);
+      }
+      if (schemaVersion !== expectedSchemaVersion) {
+        throw new Error(`SQLite backup schema version does not match manifest: expected ${expectedSchemaVersion}, got ${schemaVersion}`);
+      }
+      return { applicationId, integrity, schemaVersion };
+    } finally {
+      if (database?.open) database.close();
+      await fsPromises.rm(temporaryDirectory, { recursive: true, force: true });
     }
   }
 
