@@ -4,7 +4,7 @@ const { normalizeName, typeCode, validateAddress } = require("./message");
 
 const SUPPORTED_TYPES = new Set(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]);
 
-function normalizeRecord(record, index) {
+function normalizeRecord(record, index = 0) {
   if (!record || typeof record !== "object") throw new TypeError(`Record ${index} must be an object`);
   const name = normalizeName(record.name);
   const type = String(record.type || "").toUpperCase();
@@ -65,4 +65,4 @@ class RecordStore {
   }
 }
 
-module.exports = { RecordStore, SUPPORTED_TYPES };
+module.exports = { RecordStore, SUPPORTED_TYPES, normalizeRecord };
