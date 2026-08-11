@@ -128,6 +128,20 @@ function parseRecordData(buffer, type, classValue, ttl, start, length) {
   if (type === TYPES.A && length === 4) return { address: [...buffer.subarray(start, end)].join(".") };
   if (type === TYPES.AAAA && length === 16) return { address: formatIpv6(buffer.subarray(start, end)) };
   if ([TYPES.NS, TYPES.CNAME].includes(type)) return { value: decodeName(buffer, start).name };
+  if (type === TYPES.SOA) {
+    const mname = decodeName(buffer, start);
+    const rname = decodeName(buffer, mname.nextOffset);
+    if (rname.nextOffset + 20 > end) throw new RangeError("Truncated SOA record");
+    return {
+      mname: mname.name,
+      rname: rname.name,
+      serial: buffer.readUInt32BE(rname.nextOffset),
+      refresh: buffer.readUInt32BE(rname.nextOffset + 4),
+      retry: buffer.readUInt32BE(rname.nextOffset + 8),
+      expire: buffer.readUInt32BE(rname.nextOffset + 12),
+      minimum: buffer.readUInt32BE(rname.nextOffset + 16),
+    };
+  }
   if (type === TYPES.MX) {
     if (length < 3) throw new RangeError("Truncated MX record");
     return { priority: buffer.readUInt16BE(start), exchange: decodeName(buffer, start + 2).name };
@@ -288,6 +302,15 @@ function encodeRecordData(record, type) {
   }
   if (type === TYPES.AAAA) return encodeIpv6(record.value);
   if ([TYPES.NS, TYPES.CNAME].includes(type)) return encodeName(record.value);
+  if (type === TYPES.SOA) {
+    const values = [record.serial, record.refresh, record.retry, record.expire, record.minimum];
+    if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 0xffffffff)) {
+      throw new RangeError("SOA numeric fields must be unsigned 32-bit integers");
+    }
+    const numbers = Buffer.alloc(20);
+    values.forEach((value, index) => numbers.writeUInt32BE(value, index * 4));
+    return Buffer.concat([encodeName(record.mname), encodeName(record.rname), numbers]);
+  }
   if (type === TYPES.TXT) return encodeTxt(record.value);
   if (type === TYPES.MX) {
     const prefix = Buffer.alloc(2);

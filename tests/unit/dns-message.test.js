@@ -76,3 +76,39 @@ test("buildResponse encodes every supported custom record type", () => {
   );
   assert.equal(minimumAnswerTtl(wire), 60);
 });
+
+test("buildResponse round-trips SOA authority data", () => {
+  const query = createQuery("example.test", "SOA", { id: 8, edns: false });
+  const wire = buildResponse(query, [], {
+    authoritative: true,
+    authorities: [{
+      name: "example.test",
+      type: "SOA",
+      ttl: 300,
+      mname: "ns1.example.test",
+      rname: "hostmaster.example.test",
+      serial: 2026081101,
+      refresh: 3600,
+      retry: 600,
+      expire: 1209600,
+      minimum: 300,
+    }],
+  });
+
+  const message = parseMessage(wire);
+
+  assert.equal(message.flags.aa, true);
+  assert.deepEqual(message.authorities, [{
+    name: "example.test",
+    type: "SOA",
+    class: "IN",
+    ttl: 300,
+    mname: "ns1.example.test",
+    rname: "hostmaster.example.test",
+    serial: 2026081101,
+    refresh: 3600,
+    retry: 600,
+    expire: 1209600,
+    minimum: 300,
+  }]);
+});
