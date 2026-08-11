@@ -8,7 +8,10 @@ const { normalizeCidrs } = require("../services/proxy-security");
 const { readJson, writeJsonAtomic } = require("./atomic-file");
 const { normalizeDomains } = require("./domains");
 
+const CONFIG_SCHEMA_VERSION = 1;
+
 const DEFAULT_CONFIG = Object.freeze({
+  schemaVersion: CONFIG_SCHEMA_VERSION,
   dns: { host: "0.0.0.0", port: 5354 },
   doh: { host: "0.0.0.0", port: 8053 },
   proxy: {
@@ -24,6 +27,11 @@ const DEFAULT_CONFIG = Object.freeze({
     { name: "Cloudflare", url: "https://cloudflare-dns.com/dns-query", timeoutMs: 5000 },
     { name: "Google", url: "https://dns.google/dns-query", timeoutMs: 5000 },
   ],
+  observability: {
+    metrics: { host: "127.0.0.1", port: 9090, sampleIntervalMs: 60000 },
+    logs: { enabled: true, retentionDays: 30 },
+    webhook: { enabled: false, url: "", secret: "" },
+  },
   tunnel: { token: "" },
   domains: [],
   records: [],
@@ -32,8 +40,19 @@ const DEFAULT_CONFIG = Object.freeze({
 
 function migrateConfig(input) {
   const migrated = structuredClone(input);
+  if (!("schemaVersion" in migrated)) migrated.schemaVersion = CONFIG_SCHEMA_VERSION;
   if (!("tunnel" in migrated)) migrated.tunnel = { token: "" };
   if (!("domains" in migrated)) migrated.domains = [];
+  if (!("observability" in migrated)) migrated.observability = structuredClone(DEFAULT_CONFIG.observability);
+  else {
+    migrated.observability = {
+      ...structuredClone(DEFAULT_CONFIG.observability),
+      ...migrated.observability,
+      metrics: { ...structuredClone(DEFAULT_CONFIG.observability.metrics), ...migrated.observability.metrics },
+      logs: { ...structuredClone(DEFAULT_CONFIG.observability.logs), ...migrated.observability.logs },
+      webhook: { ...structuredClone(DEFAULT_CONFIG.observability.webhook), ...migrated.observability.webhook },
+    };
+  }
   migrated.proxy = { ...structuredClone(DEFAULT_CONFIG.proxy), ...(migrated.proxy || {}) };
   migrated.routes = (migrated.routes || []).map(migrateRoute);
   return migrated;
@@ -46,6 +65,12 @@ function validatePortGroup(name, value) {
 
 function validateConfig(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("Configuration must be an object");
+  if (!Number.isInteger(input.schemaVersion) || input.schemaVersion < 1) {
+    throw new RangeError("Configuration schema version is invalid");
+  }
+  if (input.schemaVersion > CONFIG_SCHEMA_VERSION) {
+    throw new RangeError(`Configuration uses newer configuration schema ${input.schemaVersion}`);
+  }
   for (const name of ["dns", "doh", "proxy", "admin"]) validatePortGroup(name, input[name]);
   if (!Number.isInteger(input.proxy.timeoutMs) || input.proxy.timeoutMs < 100 || input.proxy.timeoutMs > 300000) {
     throw new RangeError("Proxy timeout is invalid");
@@ -67,6 +92,38 @@ function validateConfig(input) {
       throw new TypeError(`Upstream ${index} must have a name and HTTPS URL`);
     }
   });
+  const observability = input.observability;
+  if (!observability || typeof observability !== "object") throw new TypeError("Observability configuration is required");
+  validatePortGroup("Metrics", observability.metrics);
+  if (!new Set(["127.0.0.1", "::1"]).has(observability.metrics.host)) {
+    throw new RangeError("Metrics host must be a loopback address");
+  }
+  if (!Number.isInteger(observability.metrics.sampleIntervalMs)
+    || observability.metrics.sampleIntervalMs < 1000
+    || observability.metrics.sampleIntervalMs > 60 * 60 * 1000) {
+    throw new RangeError("Metrics sample interval is invalid");
+  }
+  if (typeof observability.logs?.enabled !== "boolean"
+    || !Number.isInteger(observability.logs.retentionDays)
+    || observability.logs.retentionDays < 1
+    || observability.logs.retentionDays > 3650) {
+    throw new RangeError("Log retention configuration is invalid");
+  }
+  const webhook = observability.webhook;
+  if (!webhook || typeof webhook.enabled !== "boolean"
+    || typeof webhook.url !== "string" || typeof webhook.secret !== "string") {
+    throw new TypeError("Webhook configuration is invalid");
+  }
+  if (webhook.enabled) {
+    let webhookUrl;
+    try {
+      webhookUrl = new URL(webhook.url);
+    } catch {
+      throw new TypeError("Webhook URL must use HTTPS");
+    }
+    if (webhookUrl.protocol !== "https:") throw new TypeError("Webhook URL must use HTTPS");
+    if (!webhook.secret) throw new TypeError("Webhook secret is required");
+  }
   if (!input.tunnel || typeof input.tunnel !== "object" || typeof input.tunnel.token !== "string") {
     throw new TypeError("Tunnel token must be a string");
   }
@@ -119,4 +176,4 @@ class ConfigStore {
   }
 }
 
-module.exports = { ConfigStore, DEFAULT_CONFIG, migrateConfig, validateConfig };
+module.exports = { CONFIG_SCHEMA_VERSION, ConfigStore, DEFAULT_CONFIG, migrateConfig, validateConfig };
