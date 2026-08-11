@@ -176,9 +176,34 @@
 ### v0.3.0：DNS 與代理專業能力
 
 - 現有 domain workspace 自動升級為 primary zone，既有 records 保持相容視圖。每 zone 具可編輯 SOA、預設值、自動 serial、批次 CRUD、標準 zone file 匯入／匯出。
+- SOA serial 採主機本機時區的 `YYYYMMDDnn`：新 Zone 以當日 `00` 起始；同日異動逐次遞增，跨日跳至新日期 `00`。單日超過 99 次後仍持續單調加一，不因格式尾碼超過兩位而拒絕合法更新。
+- 該 Zone 的 DNS 記錄新增、修改、刪除、啟停，以及會影響權威回應的 Zone／SOA 設定變更，均由伺服器自動增加 serial；代理、Tunnel、可觀測性等非權威設定不得造成 serial 變動。
+- 每筆 DNS 記錄新增伺服器產生且持久化的 UUID v4 `id`；舊記錄 migration 自動補齊，既有 name/type/value 相容視圖不變。批次編輯與刪除以穩定 id 定位，不再依賴陣列位置。
+- Zone file 匯入支援常用 BIND 語法：`$ORIGIN`、`$TTL`、註解、多行括號、owner 省略，以及 SOA、A、AAAA、CNAME、MX、TXT、NS、SRV；未知 directive／type 或不屬於目標 Zone 的名稱必須拒絕，不得靜默略過。
+- 匯入先完整解析與預覽，提交時可選原子「合併」或「取代」該 Zone 直接歸屬記錄。合併時完全相同的 owner/type/rdata/TTL 略過；CNAME 共存等語意衝突使整批失敗，不留下部分更新。
+- 匯入 SOA serial 高於目前值時採用匯入值，否則依自動 serial 策略增加，確保永不倒退。Zone 匯出採固定排序、可再次匯入 S12 或 BIND 類工具的標準 BIND 文字。
+- Zone file 管理 API 以原始文字傳輸：匯入接受 `text/dns` 或 `text/plain` 本文，合併／取代模式由 query 指定；匯出回傳 `text/dns` attachment，方便瀏覽器下載與 CLI 直接使用。
+- Zone 內記錄批次新增、修改、刪除皆採整批原子語意；任一筆驗證、識別碼或 DNS 語意衝突時全部不寫入，成功時整批只觸發一次 SOA serial 更新。
+- 批次 CRUD 的 JSON 本文採三組陣列：`create` 放新記錄、`update` 放 `{ id, record }`、`delete` 放記錄 ID；三組可同時使用，後端必須先完成全部驗證再一次提交。
+- 管理 UI 的 Zone file 匯入同時提供檔案載入與可直接編輯／貼上的文字區；使用者必須先取得預覽結果，再選擇合併或取代提交，未重新預覽的異動內容不得直接匯入。
+- SOA 與 Zone 預設值使用獨立的全自建「Zone 設定」modal；選取 primary zone 後顯示目前 serial，modal 可編輯 mname、rname、refresh、retry、expire、minimum 與預設 TTL，並沿用自訂繁中驗證、焦點鎖定及 reduced-motion 契約。
 - 完成權威 DNS 語意：正確 NXDOMAIN／NODATA、authority SOA、delegation、glue 與 wildcard。v1.0 不要求 DNSSEC signing／validation、AXFR／IXFR、NOTIFY 或 TSIG。
 - DNS policy 支援 exact／suffix／wildcard 名稱、qtype、client CIDR、星期與時段、遠端清單訂閱；清單下載需驗證並原子替換，失敗保留舊版。動作包含 NXDOMAIN、REFUSED、`0.0.0.0`／`::`、自訂 CNAME／IP redirect。
+- DNS policy 多規則同時命中時，以數字較小的 `priority` 優先；相同 priority 依設定中的穩定順序取第一條，不合併多個動作。
+- DNS policy 的星期與時段可由每條規則指定 IANA 時區；未指定時使用主機本機時區。跨午夜時段必須以該規則時區正確判定。
+- 遠端 policy 清單接受每行純網域或 Hosts 格式（例如 `0.0.0.0 blocked.example`），允許註解；每個訂閱綁定單一 action 與 priority，展開後與本地規則使用相同排序規則。格式或下載驗證失敗時不得替換最後有效版本。
+- 遠端清單的每個網域只作 exact 匹配，不自動涵蓋子網域。同 priority 時本地 rules 先於 subscriptions；訂閱之間依設定順序，再依清單網域的穩定順序。
+- 訂閱只接受 HTTPS。核心啟動時先載入最後有效快取，立即提供解析，再於背景非阻塞更新；預設每 6 小時更新，可設定 5 分鐘至 7 天。單次下載最多 10 MiB、最多 1,000,000 個唯一網域，超限、格式錯誤或網路失敗均保留舊快取且不得阻止 DNS 啟動。
+- `config.json` 使用頂層 `dnsPolicy: { rules: [], subscriptions: [] }` 保存 DNS Policy；不得把解析政策混入只負責 listener host／port 的 `dns` 區段。舊設定 migration 必須補空結構並原子落盤。
 - 代理在既有 location／rewrite／headers／cache／compression／WebSocket 上新增：可設定 path／interval／timeout／期望狀態的主動健康檢查、active+passive health 歷史、weighted round-robin、維護與 graceful drain、circuit breaker／half-open／fallback response、HTTP/2 HTTPS upstream 連線池、非阻塞 shadow traffic，以及 WebSocket idle timeout／最大連線／統計／逐站台中止。
+- 主動健康檢查預設使用 `GET /healthz`，每 10 秒執行、2 秒 timeout，HTTP 200–399 視為成功；連續 2 次失敗才摘除，連續 2 次成功才恢復。每個 upstream 可覆寫健康 path、interval、timeout 與成功狀態範圍。
+- upstream `weight` 範圍為 1–100，使用 smooth weighted round-robin。circuit breaker 連續 5 次失敗後開路 30 秒，half-open 階段只允許 1 個探測請求；成功關閉、失敗重新開路。只有主 pool 全部不可用時才使用 location 明確設定的 fallback upstream。
+- GET／HEAD／OPTIONS 可自動使用 fallback；POST／PUT／PATCH／DELETE 只有 location 明確設定 `allowUnsafeFallback` 且 request body 可安全重播時才可使用，避免重複寫入。
+- 站台 `maintenance` 是持久化設定，啟用時新請求回 HTTP 503 並可設定 `Retry-After`。upstream `draining` 是不寫入 config 的暫態操作狀態；停止接收新 HTTP／WebSocket，既有連線最多等待 30 秒後中止。管理端可逐站台立即中止既有連線。
+- 排空同時支援整個站台及單一 location upstream；開始排空後立即停止向該範圍分派新 HTTP／WebSocket，30 秒寬限到期後自動中止仍存在的連線。管理 API 使用明確資源路徑，提供站台與 upstream 的 drain／resume，以及站台 abort 操作，並由管理 UI 顯示與控制暫態狀態。
+- HTTPS upstream 可逐一設定 `protocol: http1 | http2 | auto`，預設 `auto`；HTTP/2 使用可重用連線池。shadow traffic 由 location 明確設定 target、sample rate 與 timeout，非阻塞且不影響主回應、不重試；預設只鏡像 GET／HEAD／OPTIONS，移除 Authorization、Cookie、Proxy-Authorization，body 上限 1 MiB，寫入方法必須另行明確允許。
+- WebSocket 每站台預設最多 1,000 條連線、idle timeout 5 分鐘；超限回 503，閒置連線關閉。統計 active／accepted／rejected／duration／bytes，並提供逐站台中止操作。
+- active／passive upstream 健康資料在 SQLite 保留 30 天：保存狀態轉換與探測摘要，管理 UI 顯示目前狀態、延遲、成功率及近期轉換；不得因健康歷史寫入失敗中斷代理核心。
 - S12 仍不在本機終止 TLS；公開 HTTPS 與憑證持續由 Cloudflare、Caddy、Nginx 或其他受信入口處理。
 
 ### v0.4.0：多使用者、RBAC 與 API v2
