@@ -50,11 +50,23 @@ test("admin API enforces setup, session and CSRF around configuration", async (t
     clearedScopes.push(scope);
     return { entries: 0, bytes: 0, maxBytes: 1024 };
   };
+  const proxyOperations = [];
+  const proxyHistoryQueries = [];
   const service = createAdminService({
     auth,
     config,
     tunnel: fakeTunnel(),
     clearProxyCache,
+    getProxyOperations: () => ({ health: { sites: [] }, draining: { sites: [] }, websockets: { sites: [] } }),
+    getProxyHealthHistory: async (query) => {
+      proxyHistoryQueries.push(query);
+      return [{ site: "app.example.test", upstream: "primary", state: "healthy" }];
+    },
+    drainProxySite: (host) => { proxyOperations.push(["drain-site", host]); return true; },
+    resumeProxySite: (host) => { proxyOperations.push(["resume-site", host]); return true; },
+    abortProxySite: (host) => { proxyOperations.push(["abort-site", host]); return 2; },
+    drainProxyUpstream: (scope) => { proxyOperations.push(["drain-upstream", scope]); return true; },
+    resumeProxyUpstream: (scope) => { proxyOperations.push(["resume-upstream", scope]); return true; },
     status: () => ({ proxyCache: { entries: 2, bytes: 512, maxBytes: 1024 } }),
     host: "127.0.0.1",
     port: 0,
@@ -106,6 +118,33 @@ test("admin API enforces setup, session and CSRF around configuration", async (t
     method: "DELETE", cookie, csrf, body: {},
   })).status, 200);
   assert.deepEqual(clearedScopes[1], {});
+
+  assert.equal((await jsonRequest(base, "/api/proxy/operations", { cookie })).status, 200);
+  assert.equal((await jsonRequest(base, "/api/proxy/health-history?window=bad", { cookie })).status, 400);
+  const healthHistory = await jsonRequest(base, "/api/proxy/health-history?window=7d&site=app.example.test", { cookie });
+  assert.equal(healthHistory.status, 200);
+  assert.equal(healthHistory.body[0].state, "healthy");
+  assert.deepEqual(proxyHistoryQueries, [{ window: "7d", site: "app.example.test" }]);
+  assert.equal((await jsonRequest(base, "/api/proxy/sites/app.example.test/drain", { method: "POST", cookie })).status, 403);
+  assert.equal((await jsonRequest(base, "/api/proxy/sites/app.example.test/drain", { method: "POST", cookie, csrf })).status, 200);
+  assert.equal((await jsonRequest(base, "/api/proxy/sites/app.example.test/resume", { method: "POST", cookie, csrf })).status, 200);
+  const aborted = await jsonRequest(base, "/api/proxy/sites/app.example.test/abort", { method: "POST", cookie, csrf });
+  assert.equal(aborted.status, 200);
+  assert.equal(aborted.body.aborted, 2);
+  const location = encodeURIComponent("prefix:/api");
+  assert.equal((await jsonRequest(base, `/api/proxy/sites/app.example.test/locations/${location}/upstreams/primary/drain?fallback=true`, {
+    method: "POST", cookie, csrf,
+  })).status, 200);
+  assert.equal((await jsonRequest(base, `/api/proxy/sites/app.example.test/locations/${location}/upstreams/primary/resume?fallback=true`, {
+    method: "POST", cookie, csrf,
+  })).status, 200);
+  assert.deepEqual(proxyOperations, [
+    ["drain-site", "app.example.test"],
+    ["resume-site", "app.example.test"],
+    ["abort-site", "app.example.test"],
+    ["drain-upstream", { host: "app.example.test", location: "prefix:/api", id: "primary", fallback: true }],
+    ["resume-upstream", { host: "app.example.test", location: "prefix:/api", id: "primary", fallback: true }],
+  ]);
 });
 
 test("admin API supports login and invalidates logout sessions", async (t) => {
@@ -206,6 +245,51 @@ test("admin API exposes authenticated read-only DNS diagnostics", async (t) => {
   assert.equal(config.get().records.length, 0);
 });
 
+test("admin API reports DNS policy subscriptions and protects manual refresh", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-policy-subscriptions-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const auth = new AuthManager({ directory });
+  const config = new ConfigStore({ directory });
+  await auth.load();
+  await config.load();
+  await auth.setup(auth.createSetupToken(), "correct horse battery");
+  const session = auth.createSession();
+  const cookie = `s12_session=${session.id}`;
+  const refreshed = [];
+  const service = createAdminService({
+    auth,
+    config,
+    tunnel: fakeTunnel(),
+    listPolicySubscriptions: () => [{ id: "ads", domains: 42, fetchedAt: "2026-08-12T00:00:00.000Z" }],
+    refreshPolicySubscription: async (id) => {
+      refreshed.push(id);
+      return { id, domains: 43, fetchedAt: "2026-08-12T01:00:00.000Z" };
+    },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  await service.start();
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.address().port}`;
+
+  assert.equal((await jsonRequest(base, "/api/dns/policy/subscriptions")).status, 401);
+  const listed = await jsonRequest(base, "/api/dns/policy/subscriptions", { cookie });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body[0].domains, 42);
+  assert.equal((await jsonRequest(base, "/api/dns/policy/subscriptions/ads/refresh", {
+    method: "POST", cookie,
+  })).status, 403);
+  const result = await jsonRequest(base, "/api/dns/policy/subscriptions/ads/refresh", {
+    method: "POST", cookie, csrf: session.csrf,
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.domains, 43);
+  assert.deepEqual(refreshed, ["ads"]);
+  assert.equal((await jsonRequest(base, "/api/dns/policy/subscriptions/bad%2Fid/refresh", {
+    method: "POST", cookie, csrf: session.csrf,
+  })).status, 400);
+});
+
 test("admin API previews and atomically manages domain workspace trees", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-api-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -260,6 +344,104 @@ test("admin API previews and atomically manages domain workspace trees", async (
   assert.deepEqual(config.get().domains, []);
   assert.deepEqual(config.get().records, []);
   assert.deepEqual(config.get().routes, []);
+});
+
+test("admin API exports, imports and atomically batches primary zone records", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-api-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const now = new Date("2026-08-12T03:00:00Z");
+  const auth = new AuthManager({ directory });
+  const config = new ConfigStore({ directory, now: () => now });
+  await auth.load();
+  const initial = await config.load();
+  initial.domains = [{ name: "example.test", enabled: true, defaultTtl: 300 }];
+  initial.records = [
+    { name: "www.example.test", type: "A", ttl: 300, enabled: true, value: "192.0.2.10" },
+    { name: "example.test", type: "TXT", ttl: 300, enabled: true, value: "remove-me" },
+  ];
+  await config.update(initial);
+  await auth.setup(auth.createSetupToken(), "correct horse battery");
+  const service = createAdminService({ auth, config, tunnel: fakeTunnel(), host: "127.0.0.1", port: 0 });
+  await service.start();
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.address().port}`;
+  const login = await jsonRequest(base, "/api/login", {
+    method: "POST", body: { username: "admin", password: "correct horse battery" },
+  });
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  const csrf = login.body.csrf;
+
+  assert.equal((await fetch(`${base}/api/zones/example.test/export`)).status, 401);
+  const exported = await fetch(`${base}/api/zones/example.test/export`, { headers: { cookie } });
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers.get("content-type"), /^text\/dns/);
+  assert.match(exported.headers.get("content-disposition"), /example\.test\.zone/);
+  const exportedText = await exported.text();
+  assert.match(exportedText, /^\$ORIGIN example\.test\./m);
+  assert.match(exportedText, /www 300 IN A 192\.0\.2\.10/);
+
+  const zoneText = [
+    "$ORIGIN example.test.",
+    "$TTL 300",
+    "@ IN SOA ns1.example.test. hostmaster.example.test. (2026081299 3600 600 1209600 300)",
+    "api IN A 192.0.2.20",
+    "",
+  ].join("\n");
+  assert.equal((await fetch(`${base}/api/zones/example.test/import?mode=merge&preview=true`, {
+    method: "POST", headers: { cookie, "content-type": "text/dns" }, body: zoneText,
+  })).status, 403);
+  assert.equal((await fetch(`${base}/api/zones/example.test/import?mode=merge&preview=true`, {
+    method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: zoneText,
+  })).status, 415);
+  const beforePreview = config.get();
+  const previewResponse = await fetch(`${base}/api/zones/example.test/import?mode=merge&preview=true`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf, "content-type": "text/plain" },
+    body: zoneText,
+  });
+  assert.equal(previewResponse.status, 200);
+  assert.deepEqual((await previewResponse.json()).summary, { added: 1, removed: 0, skipped: 0 });
+  assert.deepEqual(config.get(), beforePreview);
+
+  const importedResponse = await fetch(`${base}/api/zones/example.test/import?mode=merge`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf, "content-type": "text/dns" },
+    body: zoneText,
+  });
+  assert.equal(importedResponse.status, 200);
+  assert.equal(config.get().domains[0].soa.serial, 2026081299);
+  assert.equal(config.get().records.some((record) => record.name === "api.example.test"), true);
+
+  const current = config.get();
+  const address = current.records.find((record) => record.name === "www.example.test");
+  const text = current.records.find((record) => record.type === "TXT");
+  const serialBeforeBatch = current.domains[0].soa.serial;
+  const batch = await jsonRequest(base, "/api/zones/example.test/records/batch", {
+    method: "POST",
+    cookie,
+    csrf,
+    body: {
+      create: [{ name: "ipv6.example.test", type: "AAAA", ttl: 120, enabled: true, value: "2001:db8::44" }],
+      update: [{ id: address.id, record: { name: "www.example.test", type: "A", ttl: 60, enabled: false, value: "192.0.2.11" } }],
+      delete: [text.id],
+    },
+  });
+  assert.equal(batch.status, 200);
+  assert.deepEqual(batch.body.summary, { created: 1, updated: 1, deleted: 1 });
+  assert.equal(config.get().domains[0].soa.serial, serialBeforeBatch + 1);
+  assert.equal(config.get().records.find((record) => record.id === address.id).value, "192.0.2.11");
+  assert.equal(config.get().records.find((record) => record.id === address.id).enabled, false);
+  assert.equal(config.get().records.some((record) => record.id === text.id), false);
+
+  const beforeRejected = config.get();
+  const rejected = await jsonRequest(base, "/api/zones/example.test/records/batch", {
+    method: "POST",
+    cookie,
+    csrf,
+    body: { create: [], update: [], delete: ["00000000-0000-4000-8000-000000000000"] },
+  });
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(config.get(), beforeRejected);
 });
 
 test("admin API persists Tunnel tokens without returning their plaintext", async (t) => {

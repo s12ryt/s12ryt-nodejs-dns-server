@@ -5,15 +5,18 @@ const http = require("node:http");
 const path = require("node:path");
 
 const { EventLog } = require("./event-log");
-const { createDomainPlan, deleteDomainTree, updateDomain } = require("./domains");
+const { classifyDomain, createDomainPlan, deleteDomainTree, normalizeDomainName, updateDomain } = require("./domains");
+const { exportZoneFile, parseZoneFile, planZoneImport, planZoneRecordBatch } = require("../dns/zone-file");
 const { normalizeHost } = require("../services/proxy-routes");
 
 const COOKIE_NAME = "s12_session";
 const MAX_JSON_BODY = 1024 * 1024;
+const MAX_ZONE_BODY = 8 * 1024 * 1024;
 const DIAGNOSTIC_TYPES = new Set(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]);
 const METRIC_WINDOWS = new Set(["24h", "7d", "30d"]);
 const WEBHOOK_STATES = new Set(["pending", "delivered", "dead-letter"]);
 const BACKUP_FILE_PATTERN = /^s12-[a-z][a-z0-9-]*-\d{8}T\d{6}Z\.zip$/;
+const POLICY_SUBSCRIPTION_ID = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/i;
 
 function parseCookies(header) {
   return Object.fromEntries(String(header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
@@ -48,6 +51,25 @@ function readJsonBody(request) {
   });
 }
 
+function readZoneBody(request) {
+  return new Promise((resolve, reject) => {
+    const contentType = String(request.headers["content-type"] || "").toLowerCase().split(";", 1)[0].trim();
+    if (!new Set(["text/dns", "text/plain"]).has(contentType)) {
+      reject(Object.assign(new Error("Content-Type must be text/dns or text/plain"), { statusCode: 415 }));
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_ZONE_BODY) reject(Object.assign(new Error("Zone file is too large"), { statusCode: 413 }));
+      else chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
+}
+
 function sendJson(response, statusCode, value, headers = {}) {
   const body = value === null ? "" : JSON.stringify(value);
   response.writeHead(statusCode, {
@@ -55,6 +77,15 @@ function sendJson(response, statusCode, value, headers = {}) {
     "cache-control": "no-store",
     ...headers,
   }).end(body);
+}
+
+function sendZoneFile(response, domainName, content) {
+  response.writeHead(200, {
+    "content-type": "text/dns; charset=utf-8",
+    "content-disposition": `attachment; filename="${domainName}.zone"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  }).end(content);
 }
 
 function sessionCookie(id, { clear = false } = {}) {
@@ -137,6 +168,13 @@ function createAdminService({
   clearTunnelToken,
   diagnoseDns,
   clearProxyCache,
+  getProxyOperations,
+  getProxyHealthHistory,
+  drainProxySite,
+  resumeProxySite,
+  abortProxySite,
+  drainProxyUpstream,
+  resumeProxyUpstream,
   getMetricHistory,
   listWebhookJobs,
   retryWebhookJob,
@@ -147,6 +185,8 @@ function createAdminService({
   getBackupDownload,
   deleteBackup,
   restoreBackup,
+  listPolicySubscriptions,
+  refreshPolicySubscription,
   events = new EventLog(),
   status = () => ({}),
   staticDirectory = path.join(__dirname, "..", "web"),
@@ -226,6 +266,26 @@ function createAdminService({
         });
         events.add({ kind: "config", message: "Configuration updated" });
         sendJson(response, 200, publicConfig(updated));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/dns/policy/subscriptions") {
+      if (typeof listPolicySubscriptions !== "function") {
+        sendJson(response, 501, { error: "DNS policy subscriptions are unavailable" });
+      } else sendJson(response, 200, await listPolicySubscriptions());
+    } else if (request.method === "POST"
+      && url.pathname.startsWith("/api/dns/policy/subscriptions/")
+      && url.pathname.endsWith("/refresh")) {
+      try {
+        if (typeof refreshPolicySubscription !== "function") {
+          throw Object.assign(new Error("DNS policy subscriptions are unavailable"), { statusCode: 501 });
+        }
+        const encoded = url.pathname.slice("/api/dns/policy/subscriptions/".length, -"/refresh".length);
+        const id = decodeURIComponent(encoded);
+        if (!POLICY_SUBSCRIPTION_ID.test(id)) throw new TypeError("DNS policy subscription id is invalid");
+        const result = await refreshPolicySubscription(id);
+        events.add({ kind: "dns-policy-subscription", message: `DNS policy subscription refreshed: ${id}` });
+        sendJson(response, 200, result);
       } catch (error) {
         sendJson(response, error.statusCode || 400, { error: error.message });
       }
@@ -400,6 +460,103 @@ function createAdminService({
         const result = await clearProxyCache(scope);
         events.add({ kind: "proxy-cache", message: scope.site ? `Proxy cache cleared: ${scope.site}` : "Proxy cache cleared" });
         sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/proxy/operations") {
+      if (typeof getProxyOperations !== "function") sendJson(response, 501, { error: "Proxy operations are unavailable" });
+      else sendJson(response, 200, await getProxyOperations());
+    } else if (request.method === "GET" && url.pathname === "/api/proxy/health-history") {
+      try {
+        if (typeof getProxyHealthHistory !== "function") {
+          throw Object.assign(new Error("Proxy health history is unavailable"), { statusCode: 501 });
+        }
+        const window = url.searchParams.get("window") || "24h";
+        if (!METRIC_WINDOWS.has(window)) {
+          throw Object.assign(new Error("Proxy health history window is invalid"), { statusCode: 400 });
+        }
+        const requestedSite = url.searchParams.get("site");
+        const site = requestedSite ? normalizeHost(requestedSite) : undefined;
+        sendJson(response, 200, await getProxyHealthHistory({ window, site }));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && /^\/api\/proxy\/sites\/[^/]+\/(drain|resume|abort)$/.test(url.pathname)) {
+      try {
+        const match = url.pathname.match(/^\/api\/proxy\/sites\/([^/]+)\/(drain|resume|abort)$/);
+        const host = normalizeHost(decodeURIComponent(match[1]));
+        if (!host) throw new TypeError("Proxy site host is invalid");
+        const callbacks = { drain: drainProxySite, resume: resumeProxySite, abort: abortProxySite };
+        const callback = callbacks[match[2]];
+        if (typeof callback !== "function") throw Object.assign(new Error("Proxy operation is unavailable"), { statusCode: 501 });
+        const result = await callback(host);
+        if (result === false) throw Object.assign(new Error(`Proxy site not found: ${host}`), { statusCode: 404 });
+        events.add({ kind: "proxy-operation", message: `Proxy site ${match[2]}: ${host}` });
+        sendJson(response, 200, match[2] === "abort" ? { host, aborted: result } : { host, draining: match[2] === "drain" });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST"
+      && /^\/api\/proxy\/sites\/[^/]+\/locations\/[^/]+\/upstreams\/[^/]+\/(drain|resume)$/.test(url.pathname)) {
+      try {
+        const match = url.pathname.match(/^\/api\/proxy\/sites\/([^/]+)\/locations\/([^/]+)\/upstreams\/([^/]+)\/(drain|resume)$/);
+        const scope = {
+          host: normalizeHost(decodeURIComponent(match[1])),
+          location: decodeURIComponent(match[2]),
+          id: decodeURIComponent(match[3]),
+          fallback: url.searchParams.get("fallback") === "true",
+        };
+        if (!scope.host || !/^(exact|prefix):\//.test(scope.location)
+          || !/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/i.test(scope.id)) {
+          throw new TypeError("Proxy upstream scope is invalid");
+        }
+        const callback = match[4] === "drain" ? drainProxyUpstream : resumeProxyUpstream;
+        if (typeof callback !== "function") throw Object.assign(new Error("Proxy upstream operation is unavailable"), { statusCode: 501 });
+        if (!await callback(scope)) throw Object.assign(new Error("Proxy upstream not found"), { statusCode: 404 });
+        events.add({ kind: "proxy-operation", message: `Proxy upstream ${match[4]}: ${scope.host}/${scope.id}` });
+        sendJson(response, 200, { ...scope, draining: match[4] === "drain" });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname.startsWith("/api/zones/") && url.pathname.endsWith("/export")) {
+      try {
+        const encoded = url.pathname.slice("/api/zones/".length, -"/export".length);
+        const domainName = normalizeDomainName(decodeURIComponent(encoded));
+        const current = config.get();
+        const domain = current.domains.find((candidate) => candidate.name === domainName);
+        if (!domain) throw Object.assign(new Error(`Unknown zone: ${domainName}`), { statusCode: 404 });
+        const records = current.records.filter((record) => classifyDomain(current.domains, record.name)?.name === domainName);
+        sendZoneFile(response, domainName, exportZoneFile({ domain, records }));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && url.pathname.startsWith("/api/zones/") && url.pathname.endsWith("/import")) {
+      try {
+        const encoded = url.pathname.slice("/api/zones/".length, -"/import".length);
+        const domainName = normalizeDomainName(decodeURIComponent(encoded));
+        const mode = url.searchParams.get("mode");
+        const preview = url.searchParams.get("preview") === "true";
+        const parsed = parseZoneFile(await readZoneBody(request), { origin: domainName });
+        const plan = planZoneImport(config.get(), domainName, parsed, { mode });
+        if (preview) {
+          sendJson(response, 200, { summary: plan.summary });
+        } else {
+          const soaSerials = parsed.soa ? { [domainName]: parsed.soa.serial } : {};
+          const updated = await config.update(plan.config, { soaSerials });
+          events.add({ kind: "config", message: `Zone file imported: ${domainName}` });
+          sendJson(response, 200, { summary: plan.summary, config: publicConfig(updated) });
+        }
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST" && url.pathname.startsWith("/api/zones/") && url.pathname.endsWith("/records/batch")) {
+      try {
+        const encoded = url.pathname.slice("/api/zones/".length, -"/records/batch".length);
+        const domainName = normalizeDomainName(decodeURIComponent(encoded));
+        const plan = planZoneRecordBatch(config.get(), domainName, await readJsonBody(request));
+        const updated = await config.update(plan.config);
+        events.add({ kind: "config", message: `Zone records updated: ${domainName}` });
+        sendJson(response, 200, { summary: plan.summary, config: publicConfig(updated) });
       } catch (error) {
         sendJson(response, error.statusCode || 400, { error: error.message });
       }
