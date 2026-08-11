@@ -158,12 +158,17 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
 .button-row.compact { margin-top: 0; }
 .logs { min-height: 240px; max-height: 420px; overflow: auto; padding: 0.75rem; color: #d8e6de; background: #101411; border-radius: 5px; font: 0.78rem/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
 
-.dns-workspace-grid { display: grid; grid-template-columns: minmax(260px, 0.75fr) minmax(360px, 1.25fr); gap: 1rem; }
-.records-panel { grid-column: 1 / -1; }
+.dns-master-detail { display: grid; grid-template-columns: minmax(280px, 0.72fr) minmax(420px, 1.5fr); gap: 1rem; align-items: start; }
+.domain-master { position: sticky; top: 1rem; }
+.domain-detail, .domain-detail-content { display: grid; min-width: 0; gap: 1rem; }
+.domain-selection-empty { display: grid; min-height: 360px; place-content: center; text-align: center; }
+.domain-selection-empty h3 { margin-bottom: 0.35rem; font-size: 1.25rem; }
 .domain-list { display: grid; gap: 0.55rem; }
 .domain-row { display: flex; min-width: 0; align-items: center; gap: 0.7rem; padding: 0.75rem; background: var(--surface-2); border: 1px solid transparent; border-radius: 5px; }
+.domain-row.selected { background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 48%, var(--border)); }
 .domain-row strong, .domain-row small { display: block; overflow-wrap: anywhere; }
-.scope-picker { min-width: 180px; }
+.domain-select { display: flex; min-width: 0; min-height: 44px; flex: 1; align-items: center; padding: 0; color: var(--text); background: transparent; border: 0; text-align: left; }
+.domain-select:hover strong { color: var(--primary); }
 .diagnostic-form { display: grid; grid-template-columns: minmax(0, 1fr) 130px auto; gap: 0.7rem; align-items: end; }
 .diagnostic-result { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; margin-top: 1rem; }
 .diagnostic-result > div { padding: 0.7rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; }
@@ -229,8 +234,8 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
   .health-stats div:first-child { border-left: 0; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-grid, .tunnel-layout { grid-template-columns: 1fr; }
-  .dns-workspace-grid { grid-template-columns: 1fr; }
-  .records-panel { grid-column: auto; }
+  .dns-master-detail { grid-template-columns: 1fr; }
+  .domain-master { position: static; }
   .diagnostic-form { grid-template-columns: minmax(0, 1fr) 120px; }
   .diagnostic-form button { grid-column: 1 / -1; }
   .tunnel-logs-panel { grid-column: auto; }
@@ -259,7 +264,6 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
   .cache-strip { align-items: stretch; flex-direction: column; }
   .diagnostic-form { grid-template-columns: 1fr; }
   .diagnostic-form button { grid-column: auto; }
-  .scope-picker { width: 100%; }
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .full { grid-column: auto; }
   .modal-layer { align-items: stretch; padding: 0; }

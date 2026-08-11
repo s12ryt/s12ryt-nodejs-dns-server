@@ -65,12 +65,17 @@
       </section>
 
       <section id="view-records" class="view" hidden>
-        <div class="section-heading"><div><p class="eyebrow">DNS WORKSPACES</p><div class="title-row"><h2>DNS 與自訂網域</h2><span id="records-summary" class="count-badge">0 筆</span></div><p class="muted">以網域工作區集中管理記錄、代理與診斷。</p></div><div class="button-row compact"><button id="add-domain" class="secondary" type="button">新增網域</button><button id="add-record" class="primary" type="button">新增記錄</button></div></div>
-        <div class="dns-workspace-grid">
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">DOMAINS</p><h3>網域工作區</h3></div></div><div id="domains-list" class="domain-list"></div></section>
-          <section class="panel"><div class="section-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>DNS 診斷</h3></div></div><form id="diagnostic-form" class="diagnostic-form" novalidate><label>診斷名稱<input name="name" autocomplete="off" placeholder="home.example.com"></label><label>診斷類型<select name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label><button class="primary" type="submit">執行 DNS 診斷</button><p class="form-message error" role="alert" hidden></p></form><div id="diagnostic-result" class="diagnostic-result" hidden><div><span>RCODE</span><strong data-testid="diagnostic-rcode"></strong></div><div><span>來源</span><strong data-testid="diagnostic-sources"></strong></div><pre data-testid="diagnostic-answers"></pre></div></section>
+        <div class="section-heading"><div><p class="eyebrow">DNS WORKSPACES</p><div class="title-row"><h2>DNS 與自訂網域</h2><span id="records-summary" class="count-badge">0 筆</span></div><p class="muted">先選擇網域，再管理直接歸屬該工作區的 DNS 記錄。</p></div><div class="button-row compact"><button id="add-domain" class="secondary" type="button">新增網域</button><button id="add-record" class="primary" type="button" disabled>新增記錄</button></div></div>
+        <div class="dns-master-detail">
+          <section class="panel domain-master"><div class="section-heading"><div><p class="eyebrow">DOMAINS</p><h3>選擇網域</h3><p class="muted">子網域依最長後綴獨立歸類。</p></div></div><div id="domains-list" class="domain-list"></div></section>
+          <div class="domain-detail">
+            <section id="domain-selection-empty" class="panel domain-selection-empty"><p class="eyebrow">DNS RECORDS</p><h3>請選擇網域</h3><p class="muted">從左側網域清單或「未分組記錄」開始管理。</p></section>
+            <div id="domain-detail-content" class="domain-detail-content" hidden>
+              <section class="panel records-panel"><div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><div class="title-row"><h3 id="selected-domain-title">DNS 記錄</h3><span id="selected-records-summary" class="count-badge">0 筆</span></div><p id="selected-domain-note" class="muted"></p></div></div><div id="records-list" class="data-list"></div></section>
+              <section class="panel"><div class="section-heading"><div><p class="eyebrow">DIAGNOSTICS</p><h3>DNS 診斷</h3></div></div><form id="diagnostic-form" class="diagnostic-form" novalidate><label>診斷名稱<input name="name" autocomplete="off" placeholder="home.example.com"></label><label>診斷類型<select name="type"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label><button class="primary" type="submit">執行 DNS 診斷</button><p class="form-message error" role="alert" hidden></p></form><div id="diagnostic-result" class="diagnostic-result" hidden><div><span>RCODE</span><strong data-testid="diagnostic-rcode"></strong></div><div><span>來源</span><strong data-testid="diagnostic-sources"></strong></div><pre data-testid="diagnostic-answers"></pre></div></section>
+            </div>
+          </div>
         </div>
-        <section class="panel records-panel"><div class="section-heading"><div><p class="eyebrow">AUTHORITATIVE</p><h3>DNS 記錄</h3></div><label class="scope-picker">顯示範圍<select id="record-scope"><option value="all">全部記錄</option><option value="unassigned">未分組記錄</option></select></label></div><div id="records-list" class="data-list"></div></section>
       </section>
 
       <section id="view-routes" class="view" hidden>

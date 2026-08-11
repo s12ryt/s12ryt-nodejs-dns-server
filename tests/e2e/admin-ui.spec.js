@@ -21,6 +21,15 @@ test.beforeAll(async () => {
   for (const name of ["dns", "doh", "proxy", "admin"]) {
     current[name] = { ...current[name], host: "127.0.0.1", port: 0 };
   }
+  current.domains = [
+    { name: "example.test", enabled: true, defaultTtl: 300, note: "父網域" },
+    { name: "child.example.test", enabled: true, defaultTtl: 300, note: "子網域" },
+  ];
+  current.records = [
+    { name: "root.example.test", type: "A", value: "192.0.2.10", ttl: 300, enabled: true },
+    { name: "api.child.example.test", type: "A", value: "192.0.2.20", ttl: 300, enabled: true },
+    { name: "outside.test", type: "A", value: "192.0.2.30", ttl: 300, enabled: true },
+  ];
   current.tunnel = { token: "initial-ui-token" };
   await config.update(current);
   let tunnelState = "stopped";
@@ -91,9 +100,23 @@ test.describe.serial("管理介面", () => {
     await expect(page.locator("dialog")).toHaveCount(0);
     await page.getByRole("button", { name: "DNS 與網域" }).click();
     await expect(page.getByRole("button", { name: "DNS 與網域" })).toHaveAttribute("aria-current", "page");
+
+    await expect(page.getByRole("heading", { name: "請選擇網域" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "新增記錄" })).toBeDisabled();
+    await expect(page.getByText("全部記錄", { exact: true })).toHaveCount(0);
+    await expect(page.locator("#records-list")).toBeHidden();
+
+    await page.getByRole("button", { name: "選擇網域 example.test" }).click();
+    await expect(page.getByRole("button", { name: "選擇網域 example.test" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("heading", { name: "example.test DNS 記錄" })).toBeVisible();
+    await expect(page.locator("#records-list").getByText("root.example.test", { exact: true })).toBeVisible();
+    await expect(page.locator("#records-list").getByText("api.child.example.test", { exact: true })).toHaveCount(0);
+    await expect(page.locator("#records-list").getByText("outside.test", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("診斷名稱")).toHaveValue("example.test");
+
     await page.getByRole("button", { name: "新增記錄" }).click();
     await expect(page.getByRole("dialog", { name: "新增 DNS 記錄" })).toBeVisible();
-    await page.getByLabel("記錄名稱").fill("home.test");
+    await page.getByLabel("記錄名稱").fill("home");
     await page.getByLabel("記錄值").fill("192.0.2.88");
     await page.route("**/api/config", async (route) => {
       if (route.request().method() === "PUT") await new Promise((resolve) => setTimeout(resolve, 250));
@@ -103,33 +126,45 @@ test.describe.serial("管理介面", () => {
     await saveRecord.click();
     await expect(saveRecord).toBeDisabled();
     await expect(saveRecord).toHaveText("儲存中…");
-    await expect(page.getByText("home.test", { exact: true })).toBeVisible();
+    await expect(page.getByText("home.example.test", { exact: true })).toBeVisible();
     await page.unroute("**/api/config");
 
-    await page.getByLabel("診斷名稱").fill("home.test");
+    await page.getByLabel("診斷名稱").fill("home.example.test");
     await page.getByLabel("診斷類型").selectOption("A");
     await page.getByRole("button", { name: "執行 DNS 診斷" }).click();
     await expect(page.getByTestId("diagnostic-rcode")).toHaveText("NOERROR");
     await expect(page.getByTestId("diagnostic-answers")).toContainText("192.0.2.88");
 
-    await page.getByRole("button", { name: "編輯 DNS 記錄 home.test" }).click();
+    await page.getByRole("button", { name: "編輯 DNS 記錄 home.example.test" }).click();
     await expect(page.getByRole("dialog", { name: "編輯 DNS 記錄" })).toBeVisible();
-    await page.getByLabel("記錄名稱").fill("edited.test");
+    await page.getByLabel("記錄名稱").fill("edited");
     await page.getByLabel("TTL").fill("900");
     await page.getByLabel("啟用記錄").uncheck();
     await page.getByRole("button", { name: "儲存記錄" }).click();
-    await expect(page.getByText("edited.test", { exact: true })).toBeVisible();
+    await expect(page.getByText("edited.example.test", { exact: true })).toBeVisible();
     await expect(page.getByText("已停用", { exact: true })).toBeVisible();
     await page.reload();
     await page.getByRole("button", { name: "DNS 與網域" }).click();
-    await expect(page.getByText("edited.test", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "請選擇網域" })).toBeVisible();
+    await page.getByRole("button", { name: "選擇網域 example.test" }).click();
+    await expect(page.getByText("edited.example.test", { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "刪除 DNS 記錄 edited.test" }).click();
+    await page.getByRole("button", { name: "刪除 DNS 記錄 edited.example.test" }).click();
     const recordConfirm = page.getByRole("dialog", { name: "刪除 DNS 記錄" });
-    await expect(recordConfirm).toContainText("edited.test");
+    await expect(recordConfirm).toContainText("edited.example.test");
     await expect(recordConfirm).toContainText("192.0.2.88");
     await recordConfirm.getByRole("button", { name: "確認刪除" }).click();
-    await expect(page.getByText("edited.test", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("edited.example.test", { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "選擇網域 child.example.test" }).click();
+    await expect(page.locator("#records-list").getByText("api.child.example.test", { exact: true })).toBeVisible();
+    await expect(page.locator("#records-list").getByText("root.example.test", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("診斷名稱")).toHaveValue("child.example.test");
+
+    await page.getByRole("button", { name: "選擇未分組記錄" }).click();
+    await expect(page.getByRole("heading", { name: "未分組 DNS 記錄" })).toBeVisible();
+    await expect(page.locator("#records-list").getByText("outside.test", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("診斷名稱")).toHaveValue("");
 
     await page.getByRole("button", { name: "新增網域" }).click();
     await expect(page.getByRole("dialog", { name: "新增網域工作區" })).toBeVisible();
@@ -142,6 +177,7 @@ test.describe.serial("管理介面", () => {
     await expect(page.getByTestId("domain-preview")).toContainText("www.site.example");
     await page.getByRole("button", { name: "建立網域" }).click();
     await expect(page.getByRole("button", { name: "編輯網域 site.example" })).toBeVisible();
+    await page.getByRole("button", { name: "選擇網域 site.example" }).click();
     await expect(page.locator("#records-list").getByText("www.site.example", { exact: true })).toBeVisible();
     await page.waitForTimeout(250);
     await page.screenshot({ path: "test-results/admin-dns-domains.png", fullPage: true });
@@ -151,12 +187,16 @@ test.describe.serial("管理介面", () => {
     await page.getByLabel("啟用網域").uncheck();
     await page.getByRole("button", { name: "儲存網域" }).click();
     await expect(page.getByRole("button", { name: "編輯網域 renamed.example" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "選擇網域 renamed.example" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("heading", { name: "renamed.example DNS 記錄" })).toBeVisible();
     await page.getByRole("button", { name: "刪除網域 renamed.example" }).click();
     const domainConfirm = page.getByRole("dialog", { name: "刪除網域工作區" });
     await expect(domainConfirm).toContainText("DNS 記錄 2 筆");
     await expect(domainConfirm).toContainText("代理站台 1 個");
     await domainConfirm.getByRole("button", { name: "刪除整個網域" }).click();
-    await expect(page.getByText("renamed.example", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "選擇網域 renamed.example" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "請選擇網域" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "新增記錄" })).toBeDisabled();
   });
 
   test("代理站台可透過五步精靈建立、編輯、複製、停用及刪除", async ({ page }) => {
@@ -262,7 +302,11 @@ test.describe.serial("管理介面", () => {
     expect(navigationOverflow).toBeLessThanOrEqual(0);
     await page.screenshot({ path: "test-results/admin-mobile.png", fullPage: true });
     await page.getByRole("button", { name: "DNS 與網域" }).click();
-    await page.screenshot({ path: "test-results/admin-mobile-dns.png", fullPage: true });
+    await page.getByRole("button", { name: "選擇網域 example.test" }).click();
+    await expect(page.locator("#records-list").getByText("root.example.test", { exact: true })).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: "test-results/admin-mobile-dns.png" });
   });
 
   test("各驗收寬度皆可完整操作且不水平溢位", async ({ page }) => {

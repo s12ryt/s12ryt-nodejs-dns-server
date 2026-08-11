@@ -2,7 +2,7 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const state = { csrf: null, config: null, status: null, tunnel: null, events: [] };
+const state = { csrf: null, config: null, status: null, tunnel: null, events: [], selectedDomain: null };
 const titles = { overview: "系統總覽", records: "DNS 與網域", routes: "代理站台", tunnel: "Cloudflare Tunnel", events: "事件日誌" };
 const serviceNames = { dns: "DNS", doh: "DoH", proxy: "Proxy", admin: "Admin" };
 const eventKinds = { auth: "驗證", config: "設定", dns: "DNS", proxy: "代理", "proxy-cache": "代理快取", tunnel: "Tunnel", "tunnel-error": "Tunnel" };
@@ -173,30 +173,49 @@ function iconButton(icon, label, action, index) {
 
 function renderDomains() {
   const domains = state.config.domains || [];
-  $("#domains-list").innerHTML = domains.length ? domains.map((domain, index) => {
-    const records = state.config.records.filter((record) => belongsTo(record.name, domain.name)).length;
-    const routes = state.config.routes.filter((route) => belongsTo(route.host, domain.name)).length;
-    return `<article class="domain-row"><div class="grow"><strong>工作區：${escapeHtml(domain.name)}</strong><small>${records} 筆 DNS · ${routes} 個代理${domain.note ? ` · ${escapeHtml(domain.note)}` : ""}</small></div><span class="state-chip ${domain.enabled === false ? "inactive" : "active"}">${domain.enabled === false ? "已停用" : "已啟用"}</span><div class="row-actions">${iconButton("edit", `編輯網域 ${domain.name}`, "edit-domain", index)}${iconButton("delete", `刪除網域 ${domain.name}`, "delete-domain", index)}</div></article>`;
-  }).join("") : empty("建立網域工作區以集中管理 DNS 與代理。");
-
-  const current = $("#record-scope").value || "all";
-  $("#record-scope").innerHTML = `<option value="all">全部記錄</option><option value="unassigned">未分組記錄</option>${domains.map((domain) => `<option value="${escapeHtml(domain.name)}">${escapeHtml(domain.name)}</option>`).join("")}`;
-  $("#record-scope").value = [...$("#record-scope").options].some((option) => option.value === current) ? current : "all";
+  const unassignedCount = state.config.records.filter((record) => !domainFor(record.name)).length;
+  const unassignedSelected = state.selectedDomain === "unassigned";
+  const rows = [`<article class="domain-row ${unassignedSelected ? "selected" : ""}"><button class="domain-select" type="button" data-domain-scope="unassigned" aria-label="選擇未分組記錄" aria-pressed="${unassignedSelected}"><span class="grow"><strong>未分組記錄</strong><small>${unassignedCount} 筆 DNS · 不屬於任何網域工作區</small></span></button></article>`];
+  rows.push(...domains.map((domain, index) => {
+    const records = state.config.records.filter((record) => domainFor(record.name)?.name === domain.name).length;
+    const routes = state.config.routes.filter((route) => domainFor(route.host)?.name === domain.name).length;
+    const selected = state.selectedDomain === domain.name;
+    return `<article class="domain-row ${selected ? "selected" : ""}"><button class="domain-select" type="button" data-domain-scope="${escapeHtml(domain.name)}" aria-label="選擇網域 ${escapeHtml(domain.name)}" aria-pressed="${selected}"><span class="grow"><strong>${escapeHtml(domain.name)}</strong><small>${records} 筆 DNS · ${routes} 個代理${domain.note ? ` · ${escapeHtml(domain.note)}` : ""}</small></span></button><span class="state-chip ${domain.enabled === false ? "inactive" : "active"}">${domain.enabled === false ? "已停用" : "已啟用"}</span><div class="row-actions">${iconButton("edit", `編輯網域 ${domain.name}`, "edit-domain", index)}${iconButton("delete", `刪除網域 ${domain.name}`, "delete-domain", index)}</div></article>`;
+  }));
+  $("#domains-list").innerHTML = rows.join("");
 }
 
 function renderRecords() {
   const records = state.config.records;
   const enabled = records.filter((record) => record.enabled !== false).length;
   $("#records-summary").textContent = `${records.length} 筆 · ${enabled} 啟用`;
+  if (state.selectedDomain !== "unassigned" && !state.config.domains.some((domain) => domain.name === state.selectedDomain)) state.selectedDomain = null;
   renderDomains();
-  const scope = $("#record-scope").value;
+  const scope = state.selectedDomain;
+  const selected = Boolean(scope);
+  $("#add-record").disabled = !selected;
+  $("#domain-selection-empty").hidden = selected;
+  $("#domain-detail-content").hidden = !selected;
+  if (!selected) return;
   const visible = records.map((record, index) => ({ record, index })).filter(({ record }) => {
-    if (scope === "all") return true;
     const workspace = domainFor(record.name);
     return scope === "unassigned" ? !workspace : workspace?.name === scope;
   });
-  $("#records-list").innerHTML = visible.length ? visible.map(({ record, index }) => `<article class="data-row"><div class="record-type">${escapeHtml(record.type)}</div><div class="grow"><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(recordValue(record))}</small></div><div class="data-meta"><span>TTL ${escapeHtml(record.ttl)}</span><span class="state-chip ${record.enabled === false ? "inactive" : "active"}">${record.enabled === false ? "已停用" : "已啟用"}</span></div><div class="row-actions">${iconButton("edit", `編輯 DNS 記錄 ${record.name}`, "edit-record", index)}${iconButton("delete", `刪除 DNS 記錄 ${record.name}`, "delete-record", index)}</div></article>`).join("") : empty(scope === "all" ? "新增第一筆自訂 DNS 記錄。" : "此範圍尚無 DNS 記錄。");
+  const domain = scope === "unassigned" ? null : state.config.domains.find((candidate) => candidate.name === scope);
+  $("#selected-domain-title").textContent = scope === "unassigned" ? "未分組 DNS 記錄" : `${scope} DNS 記錄`;
+  $("#selected-records-summary").textContent = `${visible.length} 筆`;
+  $("#selected-domain-note").textContent = scope === "unassigned" ? "只顯示不屬於任何網域工作區的完整 FQDN 記錄。" : (domain?.note || `預設 TTL ${domain?.defaultTtl ?? 300} 秒`);
+  $("#records-list").innerHTML = visible.length ? visible.map(({ record, index }) => `<article class="data-row"><div class="record-type">${escapeHtml(record.type)}</div><div class="grow"><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(recordValue(record))}</small></div><div class="data-meta"><span>TTL ${escapeHtml(record.ttl)}</span><span class="state-chip ${record.enabled === false ? "inactive" : "active"}">${record.enabled === false ? "已停用" : "已啟用"}</span></div><div class="row-actions">${iconButton("edit", `編輯 DNS 記錄 ${record.name}`, "edit-record", index)}${iconButton("delete", `刪除 DNS 記錄 ${record.name}`, "delete-record", index)}</div></article>`).join("") : empty("此網域尚無 DNS 記錄，請新增第一筆記錄。");
   animateRows($("#records-list"));
+}
+
+function selectDomain(scope) {
+  state.selectedDomain = scope;
+  const diagnostic = $("#diagnostic-form");
+  diagnostic.elements.name.value = scope === "unassigned" ? "" : scope;
+  $("#diagnostic-result").hidden = true;
+  renderRecords();
+  animateIn($("#domain-detail-content"));
 }
 
 function routeSummary(route) {
@@ -274,7 +293,7 @@ function renderAll() {
 
 async function loadApplication() {
   const [config, status, tunnel, events] = await Promise.all([api("/api/config"), api("/api/status"), api("/api/tunnel"), api("/api/events")]);
-  Object.assign(state, { config: { domains: [], ...config }, status, tunnel, events });
+  Object.assign(state, { config: { domains: [], ...config }, status, tunnel, events, selectedDomain: null });
   renderAll();
   setView("overview", { focus: false });
   $("#loading").hidden = true;
@@ -390,7 +409,11 @@ function openConfirm({ title, description, confirmLabel = "確認刪除", danger
 function qualifyRecordName(input, workspace) {
   const value = input.trim().toLowerCase().replace(/\.$/, "");
   if (!value) throw new Error("請輸入記錄名稱");
-  if (!workspace || workspace === "all" || workspace === "unassigned") return value;
+  if (!workspace) throw new Error("請先選擇網域");
+  if (workspace === "unassigned") {
+    if (!value.includes(".")) throw new Error("未分組記錄必須使用完整 FQDN");
+    return value;
+  }
   if (value === "@") return workspace;
   if (value === workspace || value.endsWith(`.${workspace}`)) return value;
   return `${value}.${workspace}`;
@@ -402,6 +425,8 @@ function parseRecord(data, workspace) {
   const name = qualifyRecordName(data.name, workspace);
   const value = data.value.trim();
   if (!value) throw new Error("請輸入記錄值");
+  const assigned = domainFor(name)?.name || "unassigned";
+  if (assigned !== workspace) throw new Error(workspace === "unassigned" ? "此名稱已屬於既有網域工作區" : "記錄名稱必須直接歸屬目前網域");
   const base = { name, type: data.type, ttl, enabled: data.enabled === "on" };
   if (data.type === "MX") {
     const [priority, exchange, ...rest] = value.split(/\s+/);
@@ -425,7 +450,7 @@ function recordFormMarkup(record, editing) {
 function openRecordModal(index = null) {
   const editing = index !== null;
   const record = editing ? state.config.records[index] : null;
-  const workspace = editing ? domainFor(record.name)?.name : $("#record-scope").value;
+  const workspace = editing ? (domainFor(record.name)?.name || "unassigned") : state.selectedDomain;
   openModal({ title: editing ? "編輯 DNS 記錄" : "新增 DNS 記錄", eyebrow: "DNS RECORD", content: recordFormMarkup(record, editing), initialFocus: "[name='name']" });
   const form = $("#record-form", $("#modal-body"));
   const updateHint = () => {
@@ -554,6 +579,7 @@ function openEditDomainModal(index) {
     setBusy(button, true, "儲存中…");
     try {
       state.config = await api(`/api/domains/${encodeURIComponent(domain.name)}`, { method: "PUT", body: { name: data.name, defaultTtl, note: data.note || "", enabled: data.enabled === "on" } });
+      if (state.selectedDomain === domain.name) state.selectedDomain = data.name.trim().toLowerCase().replace(/\.$/, "");
       renderRecords();
       renderRoutes();
       renderOverview();
@@ -577,6 +603,7 @@ function deleteDomain(index) {
     description: `<p>這會原子刪除 <strong>${escapeHtml(domain.name)}</strong> 的整棵工作區及所屬項目。</p><dl class="confirm-details"><div><dt>網域工作區</dt><dd>${domains} 個</dd></div><div><dt>DNS</dt><dd>DNS 記錄 ${records} 筆</dd></div><div><dt>代理</dt><dd>代理站台 ${routes} 個</dd></div></dl>`,
     onConfirm: async () => {
       state.config = await api(`/api/domains/${encodeURIComponent(domain.name)}`, { method: "DELETE" });
+      if (state.selectedDomain !== "unassigned" && belongsTo(state.selectedDomain, domain.name)) state.selectedDomain = null;
       renderRecords();
       renderRoutes();
       renderOverview();
@@ -826,7 +853,6 @@ $("#modal-layer").addEventListener("keydown", trapModalFocus);
 $$("[data-modal-dismiss]").forEach((element) => element.addEventListener("click", closeModal));
 $("#add-record").addEventListener("click", () => openRecordModal());
 $("#add-domain").addEventListener("click", openCreateDomainModal);
-$("#record-scope").addEventListener("change", renderRecords);
 $("#add-route").addEventListener("click", () => openSiteWizard("create"));
 
 $("#records-list").addEventListener("click", (event) => {
@@ -838,6 +864,11 @@ $("#records-list").addEventListener("click", (event) => {
 });
 
 $("#domains-list").addEventListener("click", (event) => {
+  const selector = event.target.closest("[data-domain-scope]");
+  if (selector) {
+    selectDomain(selector.dataset.domainScope);
+    return;
+  }
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const index = Number(button.dataset.index);
