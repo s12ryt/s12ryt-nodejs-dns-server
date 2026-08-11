@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 自訂網域工作區，以及 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄的完整新增、編輯、停用與刪除流程。
+- 可點選的自訂網域工作區，以及 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄的完整新增、編輯、停用與刪除流程。
 - CNAME 完整答案鏈、Cloudflare/Google DoH 依序容錯、定期上游健康探測，以及有界 LRU/TTL 快取。
 - 同埠 UDP/TCP DNS 與 `/dns-query` DoH GET/POST。
 - 具 Host alias、path location、rewrite、header、安全限制、多上游、持久快取、壓縮與 WebSocket 的 Nginx 式反向代理。
@@ -75,6 +75,8 @@ node index.js
 
 網域工作區不會修改註冊商、NS 或 Cloudflare DNS。它用來在 S12 內集中管理網域、相對名稱、DNS 記錄與所屬代理站台：
 
+- DNS 頁面先選取網域，再顯示依最長後綴直接歸屬該工作區的記錄；父網域不會混入子網域工作區的記錄。
+- 未屬於任何工作區的完整 FQDN 可從「未分組記錄」入口管理；未選取工作區時不開放新增記錄。
 - 名稱可使用 `@`、`www`、`*`、`_service._tcp` 或工作區內的完整 FQDN。
 - 子網域依最長後綴歸類；停用父網域會暫停整棵子網域及所屬 DNS／代理，但保留各子項原本的啟用狀態。
 - 網域重新命名與整棵刪除會原子更新或移除相關 DNS 名稱、CNAME 目標、代理 Host 及 aliases；衝突時不會部分寫入。
