@@ -29,16 +29,16 @@ test("release build emits a loadable runtime, standalone bootstrap and verified 
   const manifest = JSON.parse(await fs.readFile(path.join(outputDirectory, "manifest.json"), "utf8"));
 
   assert.match(bootstrap, /DEFAULT_MANIFEST_URL/);
-  assert.equal(manifest.version, "0.3.0");
+  assert.equal(manifest.version, "0.4.0");
   assert.equal(
     manifest.runtime.url,
-    "https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.3.0/runtime.cjs",
+    "https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.4.0/runtime.cjs",
   );
   assert.equal(manifest.runtime.sha256, crypto.createHash("sha256").update(runtime).digest("hex"));
   assert.equal(result.runtimeSha256, manifest.runtime.sha256);
   const bindingKey = nativeBindingKey();
   const nativeAsset = manifest.nativeBindings[bindingKey];
-  assert.equal(nativeAsset.url, `https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.3.0/better-sqlite3-${bindingKey}.node`);
+  assert.equal(nativeAsset.url, `https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.4.0/better-sqlite3-${bindingKey}.node`);
   const nativeBinding = await fs.readFile(path.join(outputDirectory, `better-sqlite3-${bindingKey}.node`));
   assert.equal(nativeAsset.sha256, crypto.createHash("sha256").update(nativeBinding).digest("hex"));
 
@@ -111,7 +111,7 @@ test("production release build includes every supported Linux native binding", a
     assert.equal(bytes.toString(), `production:${target.key}`);
     assert.equal(
       result.manifest.nativeBindings[target.key].url,
-      `https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.3.0/${fileName}`,
+      `https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.4.0/${fileName}`,
     );
     assert.equal(
       result.manifest.nativeBindings[target.key].sha256,
