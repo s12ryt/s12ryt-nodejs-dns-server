@@ -156,3 +156,40 @@
 - 新增或修改已啟用 CNAME 後，ConfigStore 原子保存與 runtime hot reload 必須讓 resolver／DoH 立即命中，不需要重新啟動程序；重新載入設定後仍須保留。
 - RED 測試須先證明目前 `OPTIONS` 回 405、缺少 CORS response headers，以及瀏覽器跨來源 fetch 失敗；GREEN 後以整合測試與 Playwright 真實跨來源 fetch 驗證。
 - 完成後執行完整 test、E2E、lint、audit、LSP、build，建立原子提交並推送 `main`，發布 `v0.1.5`，驗證 GitHub CI、Release 資產與只有 Release `index.js` 的冷啟動。
+
+## 2026-08-11：單機正式版 v1.0 路線
+
+- 產品定位為可長期正式運行的單機自架 DNS／DoH／反向代理控制台，不引入多節點一致性或高可用叢集。本次必須依序完成並嚴格發布 `v0.2.0`、`v0.3.0`、`v0.4.0`、`v1.0.0`，每版各自具 migration、完整 CI、Release、單檔冷啟動及 rollback 證據，前一版通過後才進下一版。
+- 既有 `config.json`、單檔 `index.js` 與資料必須可遷移；管理 API 可引入版本化 `/api/v2`。v1 API 進入唯讀相容期，不得無提示破壞既有自動化。
+- 正式支援平台調整為 Linux glibc x64／arm64；Windows 與 macOS 維持盡力相容，不承諾完整 SQLite、Release native asset 或正式驗收。Docker 使用 Debian-based image，不承諾 Alpine／musl。
+
+### v0.2.0：維運、可觀測與部署底座
+
+- 保留 `config.json` 作可攜設定來源，新增 `better-sqlite3` 保存歷史 metrics、完整操作／查詢／代理日誌索引、設定版本、備份 metadata、告警工作與後續帳號資料；Release 與 bootstrap 必須處理 Linux x64／arm64 native assets、SHA-256、離線 cache 及 rollback。
+- 新增完整可攜明文備份，包含設定、SQLite、Tunnel token、帳號與後續 API token 資料，預設不含 proxy cache。備份採 ZIP 封裝並內含 manifest、schema metadata 與逐檔 SHA-256；備份檔是最高敏感資產，UI／文件必須警告並限制權限。伺服器保存於 `data/backups`，管理 UI 可建立、列出、下載、刪除，並可從既有備份或上傳外部 ZIP 還原。外部上傳 API 採 `application/zip` 原始 body，檔名由 `X-Backup-Filename` 傳入，必須以有界串流寫入暫存檔後驗證；備份與還原 UI 整合至既有可觀測性頁，維持五個主導覽。外部檔案必須先完整驗證路徑、manifest、SHA 與 schema，通過後才進入維護模式。排程依主機本機時區每日 03:00 執行，保留每日 7 份，週日另保留每週 4 份。支援 dry-run、原子還原及失敗自動回滾，允許還原期間短暫停機。
+- 新增只監聽 `127.0.0.1` 獨立埠的 Prometheus `/metrics`，涵蓋 DNS、DoH、proxy、cache、upstream、runtime、backup 與 alert；允許明確修改 bind address，不與公開 DoH 共用。
+- 新增完整 client IP、qname、URL 的結構化 JSON 日誌，按日輪替並保留 30 天。完整日誌與備份下載僅 owner 可用；admin 只能查看聚合與去敏事件。
+- 管理 UI 顯示 SQLite 聚合的 24 小時、7 天、30 天流量、延遲、錯誤與容量趨勢。
+- Webhook 告警必須使用 HMAC 簽名與唯一 event id，工作持久化，採指數退避重試最多 24 小時，失敗進 dead-letter 並可由 UI 重送。
+- 正式部署產物包含 Docker Compose（非 root、volume、healthcheck、graceful stop、升級／回滾）、Linux systemd（專用使用者、權限、restart policy、journald）及面板單檔啟動。
+
+### v0.3.0：DNS 與代理專業能力
+
+- 現有 domain workspace 自動升級為 primary zone，既有 records 保持相容視圖。每 zone 具可編輯 SOA、預設值、自動 serial、批次 CRUD、標準 zone file 匯入／匯出。
+- 完成權威 DNS 語意：正確 NXDOMAIN／NODATA、authority SOA、delegation、glue 與 wildcard。v1.0 不要求 DNSSEC signing／validation、AXFR／IXFR、NOTIFY 或 TSIG。
+- DNS policy 支援 exact／suffix／wildcard 名稱、qtype、client CIDR、星期與時段、遠端清單訂閱；清單下載需驗證並原子替換，失敗保留舊版。動作包含 NXDOMAIN、REFUSED、`0.0.0.0`／`::`、自訂 CNAME／IP redirect。
+- 代理在既有 location／rewrite／headers／cache／compression／WebSocket 上新增：可設定 path／interval／timeout／期望狀態的主動健康檢查、active+passive health 歷史、weighted round-robin、維護與 graceful drain、circuit breaker／half-open／fallback response、HTTP/2 HTTPS upstream 連線池、非阻塞 shadow traffic，以及 WebSocket idle timeout／最大連線／統計／逐站台中止。
+- S12 仍不在本機終止 TLS；公開 HTTPS 與憑證持續由 Cloudflare、Caddy、Nginx 或其他受信入口處理。
+
+### v0.4.0：多使用者、RBAC 與 API v2
+
+- 內建 owner、admin、operator、viewer 四級角色，並支援依 DNS、proxy、Tunnel、backup、users、audit 等細部權限建立自訂角色。
+- 新增多使用者、邀請／停用、session 撤銷、密碼政策、scoped API token、到期、撤銷與 last-used；敏感完整日誌及備份下載固定只允許 owner，不可由自訂角色擴張。
+- 新增 REST `/api/v2`、OpenAPI、分頁、過濾、標準錯誤、idempotency key，以及具 scopes／expiry／revoke 的 bearer token。既有 v1 API 在相容期只讀。
+- 操作審計保存 actor、action、resource、before／after、requestId、IP，採 hash chain 偵測刪改，保留 365 天並可由 owner 匯出。
+
+### v1.0.0：穩定化與量化驗收
+
+- 完成所有 migration／downgrade guard、設定與資料 schema version、備份跨版本還原、升級失敗回滾、崩潰恢復、優雅關閉、診斷包、使用手冊、OpenAPI 與部署手冊。
+- 單機驗收規模為 100,000 DNS records、1,000 proxy sites、DNS 5,000 QPS、proxy 1,000 RPS、24 小時 soak；設定更新、metrics、log rotation、backup 與告警不得造成核心服務中斷。
+- 全階段維持 TDD：每項新行為先具預期原因的 RED，再以最小 GREEN 實作並受測試保護重構。每版執行完整 unit／integration／E2E、lint、audit、LSP、build、migration、壓力／穩定性與安全審查。
