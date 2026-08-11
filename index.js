@@ -77,25 +77,37 @@ async function atomicWrite(filePath, data) {
   }
 }
 
-async function verifiedCache(directory) {
+function validRuntimeMetadata(metadata) {
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(metadata?.version || "")
+    || !/^[a-f0-9]{64}$/i.test(metadata?.sha256 || "")
+    || metadata.nativeBinding?.key !== nativeBindingKey()
+    || !/^[a-f0-9]{64}$/i.test(metadata.nativeBinding?.sha256 || "")) return false;
+  const runtimeFile = `runtime-${metadata.version}`;
+  const nativeFile = `better-sqlite3-${metadata.nativeBinding.key}`;
+  return (metadata.file === `${runtimeFile}.cjs`
+      || metadata.file === `${runtimeFile}-${metadata.sha256.slice(0, 12)}.cjs`)
+    && (metadata.nativeBinding.file === `${nativeFile}.node`
+      || metadata.nativeBinding.file === `${nativeFile}-${metadata.nativeBinding.sha256.slice(0, 12)}.node`);
+}
+
+async function verifiedMetadata(directory, metadataFile) {
   try {
-    const metadata = JSON.parse(await fsp.readFile(path.join(directory, "active.json"), "utf8"));
-    const bindingKey = nativeBindingKey();
-    if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(metadata.version || "")
-      || metadata.file !== `runtime-${metadata.version}.cjs`
-      || !/^[a-f0-9]{64}$/i.test(metadata.sha256 || "")
-      || metadata.nativeBinding?.key !== bindingKey
-      || metadata.nativeBinding?.file !== `better-sqlite3-${bindingKey}.node`
-      || !/^[a-f0-9]{64}$/i.test(metadata.nativeBinding?.sha256 || "")) return null;
+    const metadata = JSON.parse(await fsp.readFile(path.join(directory, metadataFile), "utf8"));
+    if (!validRuntimeMetadata(metadata)) return null;
     const runtimePath = path.join(directory, metadata.file);
     const nativeBindingPath = path.join(directory, metadata.nativeBinding.file);
     const [data, nativeBinding] = await Promise.all([fsp.readFile(runtimePath), fsp.readFile(nativeBindingPath)]);
     if (sha256(data) !== metadata.sha256.toLowerCase()
       || sha256(nativeBinding) !== metadata.nativeBinding.sha256.toLowerCase()) return null;
-    return { path: runtimePath, nativeBindingPath, version: metadata.version, source: "cache" };
+    return { path: runtimePath, nativeBindingPath, version: metadata.version, metadata };
   } catch {
     return null;
   }
+}
+
+async function verifiedCache(directory) {
+  const runtime = await verifiedMetadata(directory, "active.json");
+  return runtime ? { ...runtime, source: "cache" } : null;
 }
 
 async function fetchJson(fetchImpl, url) {
@@ -133,23 +145,43 @@ async function resolveDownloadedRuntime({
     if (!nativeResponse.ok) throw new Error(`Native binding download returned HTTP ${nativeResponse.status}`);
     const nativeBinding = Buffer.from(await nativeResponse.arrayBuffer());
     if (sha256(nativeBinding) !== nativeAsset.sha256) throw new Error("Native binding SHA-256 verification failed");
-    const file = `runtime-${manifest.version}.cjs`;
-    const nativeFile = `better-sqlite3-${bindingKey}.node`;
+    const file = `runtime-${manifest.version}-${manifest.runtime.sha256.slice(0, 12)}.cjs`;
+    const nativeFile = `better-sqlite3-${bindingKey}-${nativeAsset.sha256.slice(0, 12)}.node`;
     const runtimePath = path.join(directory, file);
     const nativeBindingPath = path.join(directory, nativeFile);
     await atomicWrite(runtimePath, runtime);
     await atomicWrite(nativeBindingPath, nativeBinding);
-    await atomicWrite(path.join(directory, "active.json"), `${JSON.stringify({
+    const metadata = {
       version: manifest.version,
       sha256: manifest.runtime.sha256,
       file,
       nativeBinding: { key: bindingKey, sha256: nativeAsset.sha256, file: nativeFile },
-    }, null, 2)}\n`);
-    return { path: runtimePath, nativeBindingPath, version: manifest.version, source: "download" };
+    };
+    await atomicWrite(path.join(directory, "pending.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+    return { path: runtimePath, nativeBindingPath, version: manifest.version, source: "download", metadata };
   } catch (error) {
     if (error instanceof BootstrapValidationError) throw error;
     return verifiedCache(directory);
   }
+}
+
+async function promoteRuntime(directory, runtime) {
+  const pending = await verifiedMetadata(directory, "pending.json");
+  if (!pending || pending.path !== runtime.path || pending.nativeBindingPath !== runtime.nativeBindingPath) {
+    throw new BootstrapValidationError("Pending runtime verification failed");
+  }
+  await atomicWrite(path.join(directory, "active.json"), `${JSON.stringify(pending.metadata, null, 2)}\n`);
+  await fsp.rm(path.join(directory, "pending.json"), { force: true });
+}
+
+async function recordFailedRuntime(directory, runtime) {
+  await atomicWrite(path.join(directory, "failed.json"), `${JSON.stringify({
+    version: runtime.version,
+    failedAt: new Date().toISOString(),
+    code: "START_FAILED",
+    message: "Candidate runtime failed to start",
+  }, null, 2)}\n`);
+  await fsp.rm(path.join(directory, "pending.json"), { force: true });
 }
 
 function parseQuestion(wire) {
@@ -310,15 +342,35 @@ async function startFallback({
   };
 }
 
-async function launch() {
-  const localEntry = path.join(__dirname, "src", "main.js");
-  if (fs.existsSync(localEntry)) return require(localEntry).start();
-  const runtime = await resolveDownloadedRuntime();
+async function launch({
+  directory = path.resolve("data", "runtime"),
+  localEntry = path.join(__dirname, "src", "main.js"),
+  manifestUrl = process.env.APP_MANIFEST_URL || DEFAULT_MANIFEST_URL,
+  fetchImpl = fetch,
+  requireImpl = require,
+  fallbackStart = startFallback,
+} = {}) {
+  if (fs.existsSync(localEntry)) return requireImpl(localEntry).start();
+  const previous = await verifiedCache(directory);
+  const runtime = await resolveDownloadedRuntime({ directory, manifestUrl, fetchImpl });
   if (runtime) {
-    globalThis.__S12_SQLITE_NATIVE_BINDING__ = runtime.nativeBindingPath;
-    return require(runtime.path).start();
+    try {
+      globalThis.__S12_SQLITE_NATIVE_BINDING__ = runtime.nativeBindingPath;
+      const application = await requireImpl(runtime.path).start();
+      if (runtime.source === "download") await promoteRuntime(directory, runtime);
+      return application;
+    } catch {
+      if (runtime.source !== "download") return fallbackStart();
+      await recordFailedRuntime(directory, runtime);
+      const rollback = previous && await verifiedCache(directory);
+      if (rollback) {
+        globalThis.__S12_SQLITE_NATIVE_BINDING__ = rollback.nativeBindingPath;
+        return requireImpl(rollback.path).start();
+      }
+      return fallbackStart();
+    }
   }
-  return startFallback();
+  return fallbackStart();
 }
 
 function installShutdownHandlers(application, {
@@ -362,6 +414,8 @@ module.exports = {
   installShutdownHandlers,
   launch,
   nativeBindingKey,
+  promoteRuntime,
+  recordFailedRuntime,
   resolveDownloadedRuntime,
   startFallback,
   validateManifest,
