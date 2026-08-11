@@ -3,6 +3,7 @@ data/
 dist/
 test-results/
 playwright-report/
+benchmark-results/
 *.log
 .DS_Store
 Thumbs.db
