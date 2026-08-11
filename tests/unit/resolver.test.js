@@ -6,7 +6,9 @@ const test = require("node:test");
 const { DnsCache } = require("../../src/dns/cache");
 const { buildResponse, createQuery, parseMessage } = require("../../src/dns/message");
 const { RecordStore } = require("../../src/dns/records");
+const { PolicyStore } = require("../../src/dns/policy");
 const { UpstreamError, createResolver } = require("../../src/dns/resolver");
+const { ZoneStore } = require("../../src/dns/zones");
 
 test("resolver answers custom records without contacting upstreams", async () => {
   let upstreamCalls = 0;
@@ -190,4 +192,101 @@ test("resolver returns NOTIMP for zone transfer queries", async () => {
   const response = parseMessage(await resolver.resolve(createQuery("example.test", "AXFR")));
 
   assert.equal(response.flags.rcode, 4);
+});
+
+test("resolver serves authoritative NXDOMAIN and NODATA without querying upstreams", async () => {
+  let upstreamCalls = 0;
+  const domains = [{ name: "example.test", enabled: true, defaultTtl: 300 }];
+  const zoneRecords = [{ name: "www.example.test", type: "A", value: "192.0.2.20", ttl: 60 }];
+  const resolver = createResolver({
+    records: new RecordStore(zoneRecords),
+    zones: new ZoneStore({ domains, records: zoneRecords }),
+    upstreams: [{ resolve: async () => { upstreamCalls += 1; } }],
+  });
+
+  const nodata = parseMessage(await resolver.resolve(createQuery("www.example.test", "AAAA")));
+  const missing = parseMessage(await resolver.resolve(createQuery("missing.example.test", "A")));
+
+  assert.equal(nodata.flags.rcode, 0);
+  assert.equal(nodata.flags.aa, true);
+  assert.equal(nodata.authorities[0].type, "SOA");
+  assert.equal(missing.flags.rcode, 3);
+  assert.equal(missing.flags.aa, true);
+  assert.equal(missing.authorities[0].type, "SOA");
+  assert.equal(upstreamCalls, 0);
+});
+
+test("resolver follows zone CNAME chains and emits delegation glue referrals", async () => {
+  const records = [
+    { name: "alias.example.test", type: "CNAME", value: "origin.example.test", ttl: 120 },
+    { name: "origin.example.test", type: "A", value: "192.0.2.80", ttl: 60 },
+    { name: "delegated.example.test", type: "NS", value: "ns.delegated.example.test", ttl: 600 },
+    { name: "ns.delegated.example.test", type: "A", value: "192.0.2.53", ttl: 600 },
+  ];
+  const zones = new ZoneStore({ domains: [{ name: "example.test", enabled: true }], records });
+  const resolver = createResolver({ records: new RecordStore(records), zones });
+
+  const alias = parseMessage(await resolver.resolve(createQuery("alias.example.test", "A")));
+  const referral = parseMessage(await resolver.resolve(createQuery("app.delegated.example.test", "A")));
+
+  assert.deepEqual(alias.answers.map(({ type }) => type), ["CNAME", "A"]);
+  assert.equal(alias.flags.aa, true);
+  assert.equal(referral.flags.aa, false);
+  assert.equal(referral.authorities[0].type, "NS");
+  assert.equal(referral.additionals[0].address, "192.0.2.53");
+});
+
+test("resolver applies DNS policy before zones, custom records and upstreams", async () => {
+  let upstreamCalls = 0;
+  const events = [];
+  const records = new RecordStore([
+    { name: "blocked.example.test", type: "A", value: "192.0.2.10", ttl: 60 },
+  ]);
+  const resolver = createResolver({
+    records,
+    zones: new ZoneStore({ domains: [{ name: "example.test", enabled: true }], records: records.toJSON() }),
+    policies: new PolicyStore({
+      rules: [
+        { id: "deny-zone", priority: 1, match: { name: { kind: "exact", value: "blocked.example.test" } }, action: { type: "NXDOMAIN" } },
+        { id: "refuse", priority: 1, match: { name: { kind: "exact", value: "refused.public.test" } }, action: { type: "REFUSED" } },
+        { id: "sinkhole", priority: 1, match: { name: { kind: "exact", value: "sink.public.test" }, qtypes: ["A"] }, action: { type: "A", value: "0.0.0.0", ttl: 120 } },
+      ],
+    }),
+    upstreams: [{ resolve: async () => { upstreamCalls += 1; throw new Error("must not run"); } }],
+    onEvent: (event) => events.push(event),
+  });
+
+  const blocked = parseMessage(await resolver.resolve(createQuery("blocked.example.test", "A"), { clientIp: "192.0.2.20" }));
+  const refused = parseMessage(await resolver.resolve(createQuery("refused.public.test", "A"), { clientIp: "192.0.2.20" }));
+  const sinkhole = parseMessage(await resolver.resolve(createQuery("sink.public.test", "A"), { clientIp: "192.0.2.20" }));
+
+  assert.equal(blocked.flags.rcode, 3);
+  assert.equal(refused.flags.rcode, 5);
+  assert.equal(sinkhole.answers[0].address, "0.0.0.0");
+  assert.equal(sinkhole.answers[0].ttl, 120);
+  assert.equal(upstreamCalls, 0);
+  assert.equal(events.at(-1).source, "policy");
+  assert.equal(events.at(-1).policyRule, "sinkhole");
+  assert.equal(events.at(-1).policyAction, "A");
+});
+
+test("resolver follows a policy CNAME action to its final address", async () => {
+  const resolver = createResolver({
+    records: new RecordStore([
+      { name: "target.policy.test", type: "A", value: "192.0.2.90", ttl: 45 },
+    ]),
+    policies: new PolicyStore({
+      rules: [{
+        id: "redirect",
+        priority: 1,
+        match: { name: { kind: "exact", value: "alias.policy.test" }, qtypes: ["A"] },
+        action: { type: "CNAME", value: "target.policy.test", ttl: 90 },
+      }],
+    }),
+  });
+
+  const response = parseMessage(await resolver.resolve(createQuery("alias.policy.test", "A")));
+  assert.deepEqual(response.answers.map((answer) => answer.type), ["CNAME", "A"]);
+  assert.equal(response.answers[0].value, "target.policy.test");
+  assert.equal(response.answers[1].address, "192.0.2.90");
 });

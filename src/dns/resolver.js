@@ -59,15 +59,97 @@ function rcodeName(code) {
   return RCODE_NAMES[code] || `RCODE_${code}`;
 }
 
-function createResolver({ records = new RecordStore(), upstreams = [], cache = new DnsCache(), onEvent = () => {} } = {}) {
+function createResolver({ records = new RecordStore(), zones = null, policies = null, upstreams = [], cache = new DnsCache(), onEvent = () => {} } = {}) {
   if (!records || typeof records.find !== "function") throw new TypeError("records must provide find(name, type)");
+  if (zones && typeof zones.resolve !== "function") throw new TypeError("zones must provide resolve(name, type)");
+  if (policies && typeof policies.evaluate !== "function") throw new TypeError("policies must provide evaluate(request)");
 
-  async function resolveInternal(queryWire, context = { depth: 0, visited: new Set(), sources: [] }) {
+  async function resolveInternal(queryWire, context = { depth: 0, visited: new Set(), sources: [], request: {} }) {
       const query = parseMessage(queryWire);
       if (query.questions.length !== 1) return buildResponse(queryWire, [], { rcode: "FORMERR" });
       const question = query.questions[0];
       if (question.type === "AXFR" || question.type === "IXFR") {
         return buildResponse(queryWire, [], { rcode: "NOTIMP" });
+      }
+
+      const policy = policies?.evaluate({
+        name: question.name,
+        type: question.type,
+        clientIp: context.request.clientIp,
+        now: context.request.now,
+      });
+      if (policy) {
+        addSource(context, "policy");
+        context.policy = policy;
+        if (policy.action.type === "NXDOMAIN" || policy.action.type === "REFUSED") {
+          return buildResponse(queryWire, [], { rcode: policy.action.type });
+        }
+        const record = {
+          name: question.name,
+          type: policy.action.type,
+          value: policy.action.value,
+          ttl: policy.action.ttl,
+        };
+        if (policy.action.type === "CNAME" && ["A", "AAAA"].includes(question.type)) {
+          const target = normalizeName(policy.action.value);
+          const visited = new Set(context.visited);
+          visited.add(normalizeName(question.name));
+          if (!target || context.depth >= MAX_CNAME_DEPTH || visited.has(target)) {
+            return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
+          }
+          const targetWire = await resolveInternal(followUpQuery(query, target), {
+            depth: context.depth + 1,
+            visited,
+            sources: context.sources,
+            request: context.request,
+            policy: context.policy,
+          });
+          const targetResponse = parseMessage(targetWire);
+          if (targetResponse.flags.rcode !== 0) return buildResponse(queryWire, [], { rcode: targetResponse.flags.rcode });
+          return buildResponse(queryWire, [record, ...targetResponse.answers.map(recordForEncoding)], {
+            rcode: targetResponse.flags.rcode,
+            authorities: targetResponse.authorities.map(recordForEncoding),
+            additionals: targetResponse.additionals.map(recordForEncoding),
+          });
+        }
+        return buildResponse(queryWire, [record]);
+      }
+
+      const zoneResult = zones?.resolve(question.name, question.type);
+      if (zoneResult) {
+        addSource(context, "custom");
+        const aliases = zoneResult.answers.filter((record) => record.type === "CNAME");
+        if (["A", "AAAA"].includes(question.type) && aliases.length > 0) {
+          const target = normalizeName(aliases[0].value);
+          const visited = new Set(context.visited);
+          visited.add(normalizeName(question.name));
+          if (!target || context.depth >= MAX_CNAME_DEPTH || visited.has(target)) {
+            return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
+          }
+          const targetWire = await resolveInternal(followUpQuery(query, target), {
+            depth: context.depth + 1,
+            visited,
+            sources: context.sources,
+            request: context.request,
+          });
+          const targetResponse = parseMessage(targetWire);
+          if (targetResponse.flags.rcode === 2) return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
+          return buildResponse(queryWire, [
+            ...aliases,
+            ...targetResponse.answers.map(recordForEncoding),
+          ], {
+            authoritative: zoneResult.authoritative,
+            rcode: targetResponse.flags.rcode,
+            authorities: targetResponse.authorities.map(recordForEncoding),
+            additionals: targetResponse.additionals.map(recordForEncoding),
+          });
+        }
+        return buildResponse(queryWire, zoneResult.answers, {
+          authoritative: zoneResult.authoritative,
+          rcode: zoneResult.rcode,
+          authorities: zoneResult.authorities,
+          additionals: zoneResult.additionals,
+        });
       }
 
        const customRecords = records.find(question.name, question.type);
@@ -85,7 +167,8 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
            const targetWire = await resolveInternal(followUpQuery(query, target), {
              depth: context.depth + 1,
              visited,
-             sources: context.sources,
+              sources: context.sources,
+              request: context.request,
            });
           const targetResponse = parseMessage(targetWire);
           if (targetResponse.flags.rcode === 2) return buildResponse(queryWire, [], { rcode: "SERVFAIL" });
@@ -137,7 +220,8 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
       const startedAt = process.hrtime.bigint();
       const query = parseMessage(queryWire);
       const sources = [];
-      const responseWire = await resolveInternal(queryWire, { depth: 0, visited: new Set(), sources });
+       const context = { depth: 0, visited: new Set(), sources, request };
+       const responseWire = await resolveInternal(queryWire, context);
       const response = parseMessage(responseWire);
       const question = query.questions[0];
       onEvent({
@@ -147,7 +231,11 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
         name: question?.name || "",
         type: question?.type || "unknown",
         rcode: rcodeName(response.flags.rcode),
-        durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+         durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+         ...(context.policy ? {
+           policyRule: context.policy.ruleId,
+           policyAction: context.policy.action.type,
+         } : {}),
       });
       return responseWire;
     },
@@ -158,7 +246,8 @@ function createResolver({ records = new RecordStore(), upstreams = [], cache = n
       const responseWire = await resolveInternal(createQuery(normalizedName, normalizedType), {
         depth: 0,
         visited: new Set(),
-        sources,
+         sources,
+         request: {},
       });
       const response = parseMessage(responseWire);
       return {
