@@ -68,3 +68,4 @@
 - [x] 完整 runtime 與內嵌 fallback 的 `/dns-query` 均支援無憑證 CORS、OPTIONS preflight，以及成功／錯誤回應一致 headers。
 - [x] 補強 CNAME 設定原子更新後不重啟立即命中，且重新載入仍保留的 characterization test。
 - [x] 完成 75 項單元／整合測試、7 項 E2E、lint、audit、LSP 與 v0.1.5 build 驗證。
+- [x] 發布並驗證 v0.1.5 Release、GitHub CI 與單檔冷啟動；runtime SHA-256 為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`，冷啟動 DoH preflight 回 204 與 ACAO `*`。

@@ -64,3 +64,6 @@
 - 先建立完整 runtime、fallback 及真實瀏覽器 CORS RED；新增 `/dns-query` 專用 `Access-Control-Allow-Origin: *`、GET/POST/OPTIONS methods、Content-Type/Accept headers，且不開放其他路徑。
 - 補強 runtime CNAME hot update characterization：ConfigStore 更新後同一程序立即由 custom source 回 NOERROR，設定重新載入仍保留，未發現需要重啟的通用程式缺陷。
 - 回歸結果：Node 單元／整合 75/75、Playwright 7/7、ESLint、npm audit、23 個 src JS LSP 均通過；v0.1.5 build runtime SHA-256 為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`。
+- 推送 9 個需求、CORS、characterization、版本與文件原子提交，建立 `v0.1.5` tag；GitHub Actions run `31479218750` 的 Node 20/22/24、Playwright 與 Release jobs 全部成功。
+- `v0.1.5` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；全新暫存目錄初始只含 Release `index.js`，冷啟動後管理 API 回 HTTP 200、DoH OPTIONS 回 204 與 ACAO `*`，active／實際／Release runtime SHA-256 均為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`，程序與目錄已清理。
+- 發布完成後公開 `doh.czy-cf.eu.cc` 仍回 OPTIONS 405，證明該長駐部署尚未重新載入 v0.1.5；需由部署端重啟或更新程序後才會套用新 CORS 行為。
