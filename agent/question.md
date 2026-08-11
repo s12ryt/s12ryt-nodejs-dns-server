@@ -145,3 +145,14 @@
 - 保留既有網域 CRUD、自建 modal、自訂繁中驗證、鍵盤焦點、微動畫、深淺色及 reduced-motion 契約，不新增前端 runtime 依賴。
 - 驗收必須以 Playwright 覆蓋初始空白、網域選取、父子網域直接歸屬、未分組入口、選取後的記錄新增／編輯／刪除與重新載入持久化、重新命名續選、刪除回空白、診斷預填，以及 375、768、1024、1440 px 無水平溢位；另執行完整 test、lint、audit、build 與深淺色視覺審查。
 - 完成後建立原子提交、推送 `main`，發布下一個 patch 版本並驗證 GitHub CI、Release 資產及只有 Release `index.js` 的冷啟動。
+
+## 2026-08-11：公開 DoH 瀏覽器 CORS 與 CNAME 熱更新
+
+- 公開 `/dns-query` 必須允許任何網頁來源以瀏覽器 JavaScript 執行無憑證 DoH 查詢，回傳 `Access-Control-Allow-Origin: *`，不得啟用 cookie 或 credential 型跨來源存取。
+- DoH endpoint 必須接受 CORS preflight `OPTIONS`，宣告 `GET`、`POST`、`OPTIONS` 及 `Content-Type`、`Accept` request headers；preflight 不得進入 DNS resolver。
+- `/dns-query` 的成功與錯誤回應均須帶一致 CORS 標頭，讓瀏覽器可讀取 HTTP 400、405、415 等協定錯誤，而不是只得到 `Failed to fetch`。
+- 完整 runtime 與只有 `index.js` 時的內嵌 fallback DoH 必須維持一致 CORS 行為；非 `/dns-query` 路徑不得因此成為跨來源 API。
+- `16516565.tw` 工作區中的實際自訂記錄是 `awa.16516565.tw CNAME chatgpt.com`；驗收查詢名稱必須使用 `awa.16516565.tw`。未建立根記錄時，查詢 `16516565.tw` 得到 NXDOMAIN 屬預期行為，不得自動猜測或改寫查詢名稱。
+- 新增或修改已啟用 CNAME 後，ConfigStore 原子保存與 runtime hot reload 必須讓 resolver／DoH 立即命中，不需要重新啟動程序；重新載入設定後仍須保留。
+- RED 測試須先證明目前 `OPTIONS` 回 405、缺少 CORS response headers，以及瀏覽器跨來源 fetch 失敗；GREEN 後以整合測試與 Playwright 真實跨來源 fetch 驗證。
+- 完成後執行完整 test、E2E、lint、audit、LSP、build，建立原子提交並推送 `main`，發布 `v0.1.5`，驗證 GitHub CI、Release 資產與只有 Release `index.js` 的冷啟動。
