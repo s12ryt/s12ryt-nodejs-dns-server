@@ -69,3 +69,14 @@
 - [x] 補強 CNAME 設定原子更新後不重啟立即命中，且重新載入仍保留的 characterization test。
 - [x] 完成 75 項單元／整合測試、7 項 E2E、lint、audit、LSP 與 v0.1.5 build 驗證。
 - [x] 發布並驗證 v0.1.5 Release、GitHub CI 與單檔冷啟動；runtime SHA-256 為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`，冷啟動 DoH preflight 回 204 與 ACAO `*`。
+
+## 2026-08-11：v0.2.0 維運、可觀測與部署底座
+
+- [x] 確認單機正式版 v0.2.0 至 v1.0.0 的分版契約、Linux 正式平台與量化驗收門檻。
+- [x] 依 TDD 完成 better-sqlite3 WAL、schema migration、downgrade／corruption guard、設定版本及 runtime lifecycle。
+- [x] 完成 runtime 與 native binding 雙 SHA bootstrap、離線 cache，及 Node 20／22／24 的 Linux x64／arm64 六資產下載與安全 tar 驗證。
+- [x] 完成 Prometheus listener、SQLite 指標歷史、完整敏感 JSON 日誌、Webhook HMAC／重試／dead-letter 與管理 UI。
+- [x] 完成明文敏感 ZIP 備份、manifest、online SQLite snapshot、外部有界匯入、排程保留、dry-run、維護模式還原及失敗回滾。
+- [x] 完成 Docker Compose 非 root／唯讀／healthcheck／graceful stop，以及 systemd 專用帳號、權限、restart、journald與硬化設定。
+- [x] 完成 126 項單元／整合測試、9 項 E2E、lint、audit、31 個 src JS LSP 與六資產 production build 驗證。
+- [ ] 發布並驗證 v0.2.0 Release、Linux Docker CI、六個 native assets、單檔冷啟動及 rollback。
