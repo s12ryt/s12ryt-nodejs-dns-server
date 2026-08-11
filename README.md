@@ -8,7 +8,8 @@
 - Primary Zone、SOA、權威 NXDOMAIN／NODATA、delegation／glue、Zone file，以及 CNAME 完整答案鏈與多上游容錯。
 - 同埠 UDP/TCP DNS，以及支援 GET、POST、瀏覽器 CORS preflight 的 `/dns-query` DoH。
 - 具權重、主備池、健康檢查、斷路器、HTTP/2、排空、Shadow、持久快取、壓縮與 WebSocket 控制的 Nginx 式反向代理。
-- 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
+- 多使用者、PBKDF2、HttpOnly 持久 session、CSRF、登入限速、固定／自訂 RBAC、邀請與 scoped API Token。
+- SQLite 防竄改審計鏈、owner-only NDJSON 匯出，以及具標準錯誤、分頁、Bearer scope 與冪等寫入的 REST API v2。
 - 響應式深淺色管理介面，提供 DNS 診斷、核心服務健康摘要、全自建對話元件、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
 - SQLite WAL 持久化設定歷史、聚合指標與 Webhook 工作，另提供 Prometheus、每日結構化 JSON 日誌及 24 小時／7 天／30 天趨勢。
 - 完整敏感 ZIP 備份、SHA-256 manifest、每日／每週排程、外部匯入、dry-run、維護模式還原及失敗自動回滾。
@@ -147,6 +148,16 @@ node index.js
 
 本機不終止 TLS；對外 HTTPS 建議由 Cloudflare Tunnel 或其他受信任入口處理。
 
+## 身分、權限與 API
+
+首次設定建立 `owner`。固定角色另有 `admin`、`operator`、`viewer`，也可建立只包含已知權限的自訂角色。完整敏感備份下載與敏感日誌權限固定僅限 owner，不能透過自訂角色擴權。
+
+- 邀請 token 與 API token 明文只在建立當次顯示；資料庫只保存雜湊。
+- 停用使用者或變更角色會撤銷既有 session；API token 支援 scope、期限、撤銷與最近使用時間。
+- `/api/v2/openapi.json` 提供 OpenAPI 3.1；v2 寫入要求 `Idempotency-Key`，可使用 session cookie 或 Bearer token。
+- `/api/v1/config`、`status`、`events`、`tunnel` 為唯讀相容入口，並回傳 `Deprecation` 與 successor link。
+- 審計紀錄保存 actor、action、resource、before/after、request ID 與來源 IP，敏感欄位會遞迴去敏；SHA-256 hash chain 保留 365 天並可在管理介面驗證及匯出。
+
 ## 開發與驗證
 
 ```bash
@@ -167,6 +178,7 @@ npm run build
 
 - 管理介面預設開放區網，部署者應使用防火牆限制可信網段。
 - `data/config.json` 可包含 Cloudflare Tunnel token，必須視為機密檔案並限制存取。
+- API token 與 session ID 不以明文保存；邀請或 token 建立後應立即轉存至可信密鑰管理工具。
 - 只有 direct peer 位於 `proxy.trustedProxyCidrs` 時才信任 `X-Forwarded-For`；預設只信任本機 loopback。
 - 磁碟 proxy cache 可能保存上游公開回應內容；應將 `data/proxy-cache` 納入主機資料保護與容量監控。
 - DNSSEC 僅透傳，不在本機驗證。
