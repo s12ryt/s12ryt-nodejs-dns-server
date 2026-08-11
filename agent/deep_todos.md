@@ -103,3 +103,14 @@
 - [x] 完成 API v1 唯讀相容入口，以及 config、backup、Webhook、proxy cache、Tunnel與身分 mutation 審計。
 - [x] 完成 202 項單元／整合測試、14 項 E2E、lint、audit、LSP 與 v0.4.0 build 驗證；並修復備份建立結果缺少 archive size 導致審計失敗的回歸；runtime SHA-256 為 `20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。
 - [x] 發布並驗證 v0.4.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback；tag CI run `31536728312` 全綠，runtime SHA-256 為 `20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。
+
+## 2026-08-12：v1.0.0 穩定化與正式驗收
+
+- [x] 完成候選 runtime pending／promotion／去敏失敗證據，以及候選啟動失敗時重新驗證 previous last-known-good 的交易式回退。
+- [x] 完成 v0.2／v0.3／v0.4 format 1 備份的 config 與 SQLite maintenance 前預檢、future schema guard及交易式rollback。
+- [x] 完成 startup／restore／shutdown crash marker、精確白名單temp recovery與去敏recovery report。
+- [x] 完成 owner-only去敏診斷ZIP、manifest逐檔SHA、管理API與瀏覽器下載流程。
+- [x] 完成 deterministic 100,000 records／1,000 sites資料集、真UDP DNS與HTTP proxy負載、CI／scale／release profiles、原子JSON報告與CI artifact閘門。
+- [x] 完成維運／API／部署／benchmark正式手冊；完成226項Node測試、14項E2E、lint、audit、50個src JS與bootstrap／scripts LSP及v1.0.0 build，runtime SHA-256為`d375e7e476346b27e3c1a71c9caa081f2b9fb61efba9d216d231490369c17b55`。
+- [ ] 在Linux glibc x64執行100,000 records、1,000 sites、DNS 5,000 QPS、proxy 1,000 RPS與24小時不中斷formal soak，並保存`formal:true`報告。
+- [ ] 發布並驗證v1.0.0 Release、Linux CI、六個native assets、單檔冷啟動及last-known-good rollback。
