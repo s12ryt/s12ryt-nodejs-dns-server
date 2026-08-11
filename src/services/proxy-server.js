@@ -6,6 +6,7 @@ const { randomUUID } = require("node:crypto");
 const { promisify } = require("node:util");
 const zlib = require("node:zlib");
 
+const { Http2SessionPool } = require("./proxy-http2");
 const { normalizeHost } = require("./proxy-routes");
 const {
   MemoryRateLimiter,
@@ -20,6 +21,9 @@ const SAFE_RETRY_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 const DEFAULT_TRUSTED_PROXY_CIDRS = Object.freeze(["127.0.0.1/32", "::1/128"]);
 const MAX_CACHE_CAPTURE_BYTES = 32 * 1024 * 1024;
+const SHADOW_HEADER = "x-s12-shadow";
+const SHADOW_SENSITIVE_HEADERS = Object.freeze(["authorization", "cookie", "proxy-authorization"]);
+const HTTP2_FORBIDDEN_HEADERS = Object.freeze(["connection", "host", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"]);
 const brotliCompress = promisify(zlib.brotliCompress);
 const gzip = promisify(zlib.gzip);
 
@@ -96,6 +100,22 @@ function requestOptions(request, route, timeoutMs, context = requestContext(requ
 
 function transportFor(url) {
   return url.protocol === "https:" ? https : http;
+}
+
+function http2Headers(options) {
+  const headers = {
+    ":method": options.method,
+    ":scheme": "https",
+    ":authority": options.headers.host || options.hostname,
+    ":path": options.path,
+    ...options.headers,
+  };
+  for (const name of HTTP2_FORBIDDEN_HEADERS) delete headers[name];
+  return headers;
+}
+
+function responseHeadersFromHttp2(headers) {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !name.startsWith(":")));
 }
 
 function collectRequestBody(request, limit) {
@@ -175,12 +195,108 @@ function createProxyService({
   timeoutMs = 30000,
   trustedProxyCidrs = DEFAULT_TRUSTED_PROXY_CIDRS,
   rateLimiter = new MemoryRateLimiter(),
+  http2Pool = new Http2SessionPool(),
+  http1Request = (url, options, callback) => transportFor(url).request(options, callback),
+  schedule = setTimeout,
+  cancel = clearTimeout,
+  random = Math.random,
   onEvent = () => {},
 } = {}) {
   if (!routes || typeof routes.resolve !== "function") throw new TypeError("routes must provide resolve(host, path)");
   let server;
   const sockets = new Set();
   const upstreamSockets = new Set();
+  const websocketConnections = new Map();
+  const websocketStats = new Map();
+  const activeHttp = new Map();
+  const drainTimers = new Map();
+
+  function recordPassiveTransition(transition, details = {}) {
+    if (!transition) return;
+    onEvent({
+      kind: "proxy-health",
+      source: "passive",
+      healthy: transition.state === "healthy",
+      checkedAt: new Date().toISOString(),
+      ...transition,
+      ...details,
+    });
+  }
+
+  function siteWebsocketStats(site) {
+    if (!websocketStats.has(site)) {
+      websocketStats.set(site, {
+        site,
+        active: 0,
+        accepted: 0,
+        rejected: 0,
+        completed: 0,
+        bytesFromClient: 0,
+        bytesFromUpstream: 0,
+        totalDurationMs: 0,
+      });
+    }
+    return websocketStats.get(site);
+  }
+
+  function trackHttp(request, response, route) {
+    const entry = { request, response, route };
+    if (!activeHttp.has(route.host)) activeHttp.set(route.host, new Set());
+    activeHttp.get(route.host).add(entry);
+    const remove = () => activeHttp.get(route.host)?.delete(entry);
+    response.once("finish", remove);
+    response.once("close", remove);
+    return entry;
+  }
+
+  function upstreamRequest(request, route, context, callback, forceHttp1 = false) {
+    const options = requestOptions(request, route, timeoutMs, context);
+    const useHttp2 = route._upstream?.protocol === "http2"
+      || (route._upstream?.protocol === "auto" && !forceHttp1 && !http2Pool.prefersHttp1?.(route.url));
+    if (useHttp2) {
+      const { stream } = http2Pool.request(route.url, http2Headers(options));
+      stream.once("response", (headers) => {
+        stream.statusCode = Number(headers[":status"] || 502);
+        stream.headers = responseHeadersFromHttp2(headers);
+        callback(stream);
+      });
+      stream.setTimeout?.(options.timeout, () => stream.destroy(Object.assign(new Error("Proxy timeout"), { code: "ETIMEDOUT" })));
+      return stream;
+    }
+    return http1Request(route.url, options, callback);
+  }
+
+  function dispatchShadow(request, route, body, context) {
+    const shadow = route.location.shadow;
+    if (!shadow || random() >= shadow.sampleRate || body.length > shadow.maxBodyBytes) return;
+    if (!SAFE_RETRY_METHODS.has(request.method) && !shadow.allowUnsafeMethods) return;
+    const target = new URL(shadow.target);
+    const rewritten = rewriteRequestPath(request.url, route.location, route.rewrite);
+    const headers = { ...request.headers, host: target.host, [SHADOW_HEADER]: "1", "x-request-id": context.requestId };
+    for (const name of SHADOW_SENSITIVE_HEADERS) delete headers[name];
+    const startedAt = process.hrtime.bigint();
+    const shadowRequest = transportFor(target).request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
+      method: request.method,
+      path: targetPath(target.pathname, rewritten),
+      headers,
+      timeout: shadow.timeoutMs,
+      servername: target.hostname,
+    }, (shadowResponse) => {
+      shadowResponse.resume();
+      shadowResponse.once("end", () => onEvent({
+        kind: "proxy-shadow",
+        host: route.host,
+        statusCode: shadowResponse.statusCode || 0,
+        durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+      }));
+    });
+    shadowRequest.once("timeout", () => shadowRequest.destroy(Object.assign(new Error("Shadow timeout"), { code: "ETIMEDOUT" })));
+    shadowRequest.once("error", (error) => onEvent({ kind: "proxy-shadow-error", host: route.host, message: error.message }));
+    shadowRequest.end(body);
+  }
 
   function writeSelectionError(responseOrSocket, status, message) {
     if (typeof responseOrSocket.writeHead === "function") responseOrSocket.writeHead(status).end(message);
@@ -195,6 +311,21 @@ function createProxyService({
     const route = routes.resolve(request.headers.host, request.url);
     if (!route) {
       writeSelectionError(responseOrSocket, 404, "No proxy route");
+      return null;
+    }
+    if (route.maintenance) {
+      const headers = { "retry-after": String(route.retryAfterSeconds) };
+      if (typeof responseOrSocket.writeHead === "function") {
+        responseOrSocket.writeHead(503, headers).end("Site under maintenance");
+      } else {
+        responseOrSocket.end(`HTTP/1.1 503 Service Unavailable\r\nRetry-After: ${route.retryAfterSeconds}\r\nConnection: close\r\n\r\n`);
+      }
+      return null;
+    }
+    if (route.draining) {
+      const headers = { "retry-after": String(route.retryAfterSeconds) };
+      if (typeof responseOrSocket.writeHead === "function") responseOrSocket.writeHead(503, headers).end("Site is draining");
+      else responseOrSocket.end(`HTTP/1.1 503 Service Unavailable\r\nRetry-After: ${route.retryAfterSeconds}\r\nConnection: close\r\n\r\n`);
       return null;
     }
     if (route.unavailable) {
@@ -215,7 +346,7 @@ function createProxyService({
     return true;
   }
 
-  async function handleHttpRequest(request, response, initialRoute) {
+  async function handleHttpRequest(request, response, initialRoute, activeRequest) {
     const context = requestContext(request, trustedProxyCidrs);
     if (!isClientAllowed(context.clientIp, initialRoute.location.access)) {
       request.resume();
@@ -244,6 +375,7 @@ function createProxyService({
       if (!response.headersSent) response.writeHead(error.statusCode || 400).end(error.message);
       return;
     }
+    dispatchShadow(request, initialRoute, body, context);
 
     if (cache && initialRoute.location.cache.enabled) {
       try {
@@ -261,22 +393,33 @@ function createProxyService({
       }
     }
     const safeToRetry = SAFE_RETRY_METHODS.has(request.method);
+    const fallbackAllowed = safeToRetry || initialRoute.location.allowUnsafeFallback;
 
-    const attempt = (route) => {
-      const upstream = transportFor(route.url).request(requestOptions(request, route, timeoutMs, context), (upstreamResponse) => {
+    const nextAttempt = (failedRoute) => {
+      const primary = routes.resolve(request.headers.host, request.url);
+      if (primary && !primary.unavailable && !primary.redirect && !primary.maintenance
+        && primary._upstream !== failedRoute._upstream) return primary;
+      if (!fallbackAllowed || failedRoute.fallback) return null;
+      const fallback = routes.resolveFallback?.(request.headers.host, request.url);
+      return fallback && !fallback.unavailable && !fallback.redirect && !fallback.maintenance ? fallback : null;
+    };
+
+    const attempt = (route, forceHttp1 = false) => {
+      if (activeRequest) activeRequest.route = route;
+      const upstream = upstreamRequest(request, route, context, (upstreamResponse) => {
         const status = upstreamResponse.statusCode || 502;
         if (RETRYABLE_STATUSES.has(status)) {
-          routes.markFailure(route);
-          if (safeToRetry) {
-            const next = routes.resolve(request.headers.host, request.url);
-            if (next && !next.unavailable && !next.redirect) {
+          recordPassiveTransition(routes.markFailure(route), { statusCode: status });
+          if (safeToRetry || route.location.allowUnsafeFallback) {
+            const next = nextAttempt(route);
+            if (next) {
               upstreamResponse.resume();
               attempt(next);
               return;
             }
           }
         } else {
-          routes.markSuccess(route);
+          recordPassiveTransition(routes.markSuccess(route), { statusCode: status });
         }
         const headers = applyHeaderRules(upstreamResponse.headers, route.responseHeaders, context);
         const contentLength = Number(headers["content-length"]);
@@ -324,14 +467,19 @@ function createProxyService({
           }
           writer.end();
         });
-      });
+      }, forceHttp1);
       upstream.on("timeout", () => upstream.destroy(Object.assign(new Error("Proxy timeout"), { code: "ETIMEDOUT" })));
       upstream.on("error", (error) => {
-        routes.markFailure(route);
+        if (route._upstream?.protocol === "auto" && !forceHttp1 && !response.headersSent) {
+          http2Pool.markHttp1?.(route.url);
+          attempt(route, true);
+          return;
+        }
+        recordPassiveTransition(routes.markFailure(route), { error: error.message });
         onEvent({ kind: "proxy-error", host: route.host, message: error.message });
-        if (safeToRetry && !response.headersSent) {
-          const next = routes.resolve(request.headers.host, request.url);
-          if (next && !next.unavailable && !next.redirect) {
+        if ((safeToRetry || route.location.allowUnsafeFallback) && !response.headersSent) {
+          const next = nextAttempt(route);
+          if (next) {
             attempt(next);
             return;
           }
@@ -369,7 +517,8 @@ function createProxyService({
         });
         const route = selectRoute(request, response);
         if (!route) return;
-        handleHttpRequest(request, response, route).catch((error) => {
+        const activeRequest = trackHttp(request, response, route);
+        handleHttpRequest(request, response, route, activeRequest).catch((error) => {
           onEvent({ kind: "proxy-error", host: route.host, message: error.message });
           if (!response.headersSent) response.writeHead(500).end("Proxy request failed");
           else response.destroy(error);
@@ -386,9 +535,16 @@ function createProxyService({
         if (!route) return;
         const context = requestContext(request);
         if (handleRedirect(request, socket, route, context)) return;
+        const stats = siteWebsocketStats(route.host);
+        if (stats.active >= route.site.websocket.maxConnections) {
+          stats.rejected += 1;
+          onEvent({ kind: "proxy-websocket-rejected", host: route.host, reason: "connection-limit" });
+          socket.end("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n");
+          return;
+        }
         const upstream = transportFor(route.url).request(requestOptions(request, route, timeoutMs, context));
         upstream.on("upgrade", (upstreamResponse, upstreamSocket, upstreamHead) => {
-          routes.markSuccess(route);
+          recordPassiveTransition(routes.markSuccess(route), { statusCode: upstreamResponse.statusCode });
           upstreamSockets.add(upstreamSocket);
           upstreamSocket.once("close", () => upstreamSockets.delete(upstreamSocket));
           const status = `HTTP/${upstreamResponse.httpVersion} ${upstreamResponse.statusCode} ${upstreamResponse.statusMessage}\r\n`;
@@ -396,11 +552,53 @@ function createProxyService({
           socket.write(`${status}${headers}\r\n`);
           if (upstreamHead.length) socket.write(upstreamHead);
           if (head.length) upstreamSocket.write(head);
+          const connection = {
+            client: socket,
+            upstream: upstreamSocket,
+            startedAt: process.hrtime.bigint(),
+            bytesFromClient: head.length,
+            bytesFromUpstream: upstreamHead.length,
+            closed: false,
+          };
+          if (!websocketConnections.has(route.host)) websocketConnections.set(route.host, new Set());
+          websocketConnections.get(route.host).add(connection);
+          stats.active += 1;
+          stats.accepted += 1;
+          socket.on("data", (chunk) => { connection.bytesFromClient += chunk.length; });
+          upstreamSocket.on("data", (chunk) => { connection.bytesFromUpstream += chunk.length; });
+          const finalize = () => {
+            if (connection.closed) return;
+            connection.closed = true;
+            websocketConnections.get(route.host)?.delete(connection);
+            stats.active = Math.max(0, stats.active - 1);
+            stats.completed += 1;
+            stats.bytesFromClient += connection.bytesFromClient;
+            stats.bytesFromUpstream += connection.bytesFromUpstream;
+            const durationMs = Number(process.hrtime.bigint() - connection.startedAt) / 1e6;
+            stats.totalDurationMs += durationMs;
+            onEvent({
+              kind: "proxy-websocket",
+              host: route.host,
+              durationMs,
+              bytesFromClient: connection.bytesFromClient,
+              bytesFromUpstream: connection.bytesFromUpstream,
+            });
+          };
+          socket.once("close", finalize);
+          upstreamSocket.once("close", finalize);
+          socket.setTimeout(route.site.websocket.idleTimeoutMs, () => {
+            socket.destroy();
+            upstreamSocket.destroy();
+          });
+          upstreamSocket.setTimeout(route.site.websocket.idleTimeoutMs, () => {
+            upstreamSocket.destroy();
+            socket.destroy();
+          });
           upstreamSocket.pipe(socket).pipe(upstreamSocket);
         });
         upstream.on("timeout", () => upstream.destroy());
         upstream.on("error", () => {
-          routes.markFailure(route);
+          recordPassiveTransition(routes.markFailure(route), { error: "WebSocket upstream unavailable" });
           socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
         });
         upstream.end();
@@ -414,14 +612,77 @@ function createProxyService({
     address() {
       return server?.address();
     },
+    websocketStatus() {
+      return { sites: [...websocketStats.values()].map((value) => ({ ...value })).sort((left, right) => left.site.localeCompare(right.site)) };
+    },
+    drainStatus() {
+      return routes.drainStatus?.() || { sites: [] };
+    },
+    drainSite(host) {
+      const site = normalizeHost(host);
+      if (!routes.setSiteDraining?.(site, true)) return false;
+      if (drainTimers.has(`site:${site}`)) cancel(drainTimers.get(`site:${site}`));
+      const timer = schedule(() => this.abortSite(site), routes.siteDrainTimeout?.(site) || 30_000);
+      timer?.unref?.();
+      drainTimers.set(`site:${site}`, timer);
+      return true;
+    },
+    resumeSite(host) {
+      const site = normalizeHost(host);
+      const timer = drainTimers.get(`site:${site}`);
+      if (timer) cancel(timer);
+      drainTimers.delete(`site:${site}`);
+      return routes.setSiteDraining?.(site, false) || false;
+    },
+    drainUpstream(scope) {
+      if (!routes.setUpstreamDraining?.(scope, true)) return false;
+      const key = `upstream:${normalizeHost(scope.host)}:${scope.location}:${Boolean(scope.fallback)}:${scope.id}`;
+      if (drainTimers.has(key)) cancel(drainTimers.get(key));
+      const timer = schedule(() => {
+        for (const entry of activeHttp.get(normalizeHost(scope.host)) || []) {
+          const route = entry.route;
+          const location = `${route.location.match}:${route.location.path}`;
+          if (location === scope.location && route._upstream?.id === scope.id && Boolean(route.fallback) === Boolean(scope.fallback)) {
+            entry.request.socket.destroy();
+          }
+        }
+      }, scope.timeoutMs || 30_000);
+      timer?.unref?.();
+      drainTimers.set(key, timer);
+      return true;
+    },
+    resumeUpstream(scope) {
+      const key = `upstream:${normalizeHost(scope.host)}:${scope.location}:${Boolean(scope.fallback)}:${scope.id}`;
+      const timer = drainTimers.get(key);
+      if (timer) cancel(timer);
+      drainTimers.delete(key);
+      return routes.setUpstreamDraining?.(scope, false) || false;
+    },
+    abortSite(host) {
+      const site = normalizeHost(host);
+      const connections = [...(websocketConnections.get(site) || [])];
+      for (const connection of connections) {
+        connection.client.destroy();
+        connection.upstream.destroy();
+      }
+      const requests = [...(activeHttp.get(site) || [])];
+      for (const entry of requests) entry.request.socket.destroy();
+      return connections.length + requests.length;
+    },
     async close() {
-      if (!server) return;
+      if (!server) {
+        await http2Pool.close?.();
+        return;
+      }
       for (const socket of sockets) socket.destroy();
       for (const socket of upstreamSockets) socket.destroy();
+      for (const timer of drainTimers.values()) cancel(timer);
+      drainTimers.clear();
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       sockets.clear();
       upstreamSockets.clear();
       server = undefined;
+      await http2Pool.close?.();
     },
   };
 }
@@ -432,12 +693,16 @@ module.exports = {
   RETRYABLE_STATUSES,
   DEFAULT_TRUSTED_PROXY_CIDRS,
   MAX_CACHE_CAPTURE_BYTES,
+  SHADOW_HEADER,
+  SHADOW_SENSITIVE_HEADERS,
+  HTTP2_FORBIDDEN_HEADERS,
   applyHeaderRules,
   createProxyService,
   collectRequestBody,
   encodeBufferedResponse,
   expandTemplate,
   requestOptions,
+  http2Headers,
   requestContext,
   negotiatedEncoding,
   rewriteRequestPath,
