@@ -67,3 +67,14 @@
 - 推送 9 個需求、CORS、characterization、版本與文件原子提交，建立 `v0.1.5` tag；GitHub Actions run `31479218750` 的 Node 20/22/24、Playwright 與 Release jobs 全部成功。
 - `v0.1.5` Release 發布 `index.js`、`runtime.cjs`、`manifest.json`；全新暫存目錄初始只含 Release `index.js`，冷啟動後管理 API 回 HTTP 200、DoH OPTIONS 回 204 與 ACAO `*`，active／實際／Release runtime SHA-256 均為 `18245440925240d5f7e9feef7e3b9a0714b435802b9854eddb1745c0390e8c9a`，程序與目錄已清理。
 - 發布完成後公開 `doh.czy-cf.eu.cc` 仍回 OPTIONS 405，證明該長駐部署尚未重新載入 v0.1.5；需由部署端重啟或更新程序後才會套用新 CORS 行為。
+- 依「往完整版推進」需求確認單機正式版路線，依序交付 v0.2.0、v0.3.0、v0.4.0、v1.0.0；正式平台為 Linux glibc x64／arm64，完整契約寫入 `agent/question.md`。
+- 安裝 `better-sqlite3@12.6.2`、`yazl@3.3.1`、`yauzl@3.4.0`；完成 SQLite WAL、application id、quick_check、transaction migration、future schema guard、config history、metrics與Webhook jobs。
+- 完成 native bootstrap：manifest依 ABI／platform／arch選擇 binding，runtime與binding雙SHA cache；build可採本機binding或完整production binding directory。
+- 完成 MetricsRegistry、獨立loopback metrics service、每日敏感JSON logger、Webhook HMAC dispatcher與TelemetryPipeline；DNS／DoH／proxy事件包含transport、client IP、名稱／URL、status與duration。
+- 完成可觀測管理 API/UI：24h／7d／30d聚合、Webhook secret去敏與專用更新、dead-letter列表與重送。
+- 完成 ZIP備份管理：online SQLite snapshot、portable白名單、manifest與逐檔SHA、路徑／重複／大小／schema防護、server list/download/delete、raw ZIP有界匯入。
+- 完成每日03:00 daily 7份、週日weekly 4份排程；維護模式pause/resume，還原前dry-run，原子替換失敗時完整rollback。
+- 完成備份UI，Playwright真實驗證預覽、建立、下載、外部匯入、還原dry-run與自建刪除確認。
+- 新增 better-sqlite3 v12.6.2 官方六組 Linux glibc native downloader；真實GitHub Release下載後發現官方tar使用精確 `build/Release/better_sqlite3.node`，先補RED再支援並成功下載全部六組。
+- 完成 Debian Dockerfile／Compose與systemd部署；bootstrap新增SIGTERM／SIGINT單次 graceful close。Windows驗證主機無Docker/systemd工具，實機容器驗收移至GitHub Ubuntu deployment job並成為Release依賴。
+- v0.2.0發布前回歸：Node單元／整合126/126、Playwright 9/9、ESLint、npm audit 0、31個src JS LSP皆通過；六資產production runtime SHA-256為`1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
