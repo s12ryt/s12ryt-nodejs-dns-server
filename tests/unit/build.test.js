@@ -25,10 +25,10 @@ test("release build emits a loadable runtime, standalone bootstrap and verified 
   const builtRuntime = require(path.join(outputDirectory, "runtime.cjs"));
   assert.equal(typeof builtRuntime.start, "function");
   assert.match(bootstrap, /DEFAULT_MANIFEST_URL/);
-  assert.equal(manifest.version, "0.1.3");
+  assert.equal(manifest.version, "0.1.4");
   assert.equal(
     manifest.runtime.url,
-    "https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.1.3/runtime.cjs",
+    "https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/download/v0.1.4/runtime.cjs",
   );
   assert.equal(manifest.runtime.sha256, crypto.createHash("sha256").update(runtime).digest("hex"));
   assert.equal(result.runtimeSha256, manifest.runtime.sha256);
