@@ -91,4 +91,4 @@
 - [x] 完成 pooled HTTP/2 與自動 HTTP/1.1 降級、非阻塞 Shadow traffic、WebSocket 限制／統計／中止。
 - [x] 完成進階代理五步精靈、站台與 upstream 運行控制、健康歷史及完整自建 UI 流程。
 - [x] 完成 179 項單元／整合測試、12 項 E2E、lint、audit、37 個 src JS LSP 與 v0.3.0 build 驗證。
-- [ ] 發布並驗證 v0.3.0 Release、Linux CI、單檔冷啟動及 last-known-good rollback。
+- [x] 發布並驗證 v0.3.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback；runtime SHA-256 為 `42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。

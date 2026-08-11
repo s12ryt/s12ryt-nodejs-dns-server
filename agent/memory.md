@@ -89,3 +89,7 @@
 - 完成 pooled HTTP/2與auto HTTP/1.1 fallback、Shadow traffic、WebSocket連線上限／idle／統計／abort；被動breaker只在狀態transition時寫入`proxy-health`，避免穩態噪音。
 - 擴充五步代理精靈，可編輯maintenance、WebSocket限制、結構化主備上游、weight、protocol、健康檢查、unsafe fallback與Shadow設定。
 - v0.3.0發布前回歸：Node單元／整合179/179、Playwright12/12、ESLint、npm audit 0、37個src JS LSP均通過；本機build runtime SHA-256為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`，Release尚待建立。
+- 推送22個v0.3需求、DNS、Policy、代理、UI、版本與文件原子提交；main CI run `31526693508` 的Node 20／22／24、Playwright12項及Debian唯讀容器health／graceful stop全部成功。
+- 建立`v0.3.0` tag指向`b341f029edaf331aacbb2a6003121349b233df05`；tag CI run `31526833987`的Node矩陣、E2E、Docker部署、六組Linux native binding、Release及發布後驗收全部成功。
+- `v0.3.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.3.0`，包含index、runtime、manifest與ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。
+- 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
