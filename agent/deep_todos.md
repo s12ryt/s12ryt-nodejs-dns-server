@@ -92,3 +92,14 @@
 - [x] 完成進階代理五步精靈、站台與 upstream 運行控制、健康歷史及完整自建 UI 流程。
 - [x] 完成 179 項單元／整合測試、12 項 E2E、lint、audit、37 個 src JS LSP 與 v0.3.0 build 驗證。
 - [x] 發布並驗證 v0.3.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback；runtime SHA-256 為 `42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。
+
+## 2026-08-12：v0.4.0 身分、API 與防竄改審計
+
+- [x] 完成 SQLite schema v6，以及角色、使用者、邀請、持久 session、scoped API token、審計鏈與 idempotency 儲存。
+- [x] 完成 owner／admin／operator／viewer 固定角色、自訂角色與不可委派 owner-only 敏感權限。
+- [x] 完成 legacy admin migration、多使用者邀請／停用、session 撤銷、API token expiry／revoke／last-used。
+- [x] 完成 Cookie／Bearer 共用 RBAC、身分管理 API，以及角色、邀請、token 與審計管理 UI。
+- [x] 完成 REST API v2 OpenAPI、標準錯誤、分頁／過濾、主要 DNS／proxy／Tunnel／backup／audit 資源，以及冪等寫入。
+- [x] 完成 API v1 唯讀相容入口，以及 config、backup、Webhook、proxy cache、Tunnel與身分 mutation 審計。
+- [x] 完成 202 項單元／整合測試、14 項 E2E、lint、audit、LSP 與 v0.4.0 build 驗證；並修復備份建立結果缺少 archive size 導致審計失敗的回歸；runtime SHA-256 為 `20d859cd03614ea6bceb66cf89692794d850d499d5d162e91e33b64ebf61f28b`。
+- [ ] 發布並驗證 v0.4.0 Release、Linux CI、六個 native assets、單檔冷啟動及 last-known-good rollback。
