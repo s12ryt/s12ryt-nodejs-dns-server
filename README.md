@@ -1,6 +1,6 @@
 # S12 DNS Server
 
-自架的 Node.js DNS 控制台，整合 UDP/TCP DNS、RFC 8484 DoH、自訂記錄、多上游容錯、HTTP/WebSocket 反向代理與 Cloudflare Tunnel 管理。支援 Node.js 20 以上版本，以及 Windows、Linux、macOS。
+自架的 Node.js DNS 控制台，整合 UDP/TCP DNS、RFC 8484 DoH、自訂記錄、多上游容錯、HTTP/WebSocket 反向代理與 Cloudflare Tunnel 管理。需要 Node.js 20 以上版本；正式部署支援 Linux glibc x64／arm64，Windows 與 macOS 為盡力相容。
 
 ## 功能
 
@@ -10,6 +10,8 @@
 - 具 Host alias、path location、rewrite、header、安全限制、多上游、持久快取、壓縮與 WebSocket 的 Nginx 式反向代理。
 - 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
 - 響應式深淺色管理介面，提供 DNS 診斷、核心服務健康摘要、全自建對話元件、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
+- SQLite WAL 持久化設定歷史、聚合指標與 Webhook 工作，另提供 Prometheus、每日結構化 JSON 日誌及 24 小時／7 天／30 天趨勢。
+- 完整敏感 ZIP 備份、SHA-256 manifest、每日／每週排程、外部匯入、dry-run、維護模式還原及失敗自動回滾。
 - 只有 `index.js` 時可下載經 SHA-256 驗證的完整 runtime；離線時改用最後有效快取或內嵌 DNS/DoH 核心。
 
 ## 完整安裝
@@ -29,6 +31,7 @@ npm start
 | DoH | `http://0.0.0.0:8053/dns-query` |
 | 反向代理 | `http://0.0.0.0:8080` |
 | 管理 UI/API | `http://0.0.0.0:8081` |
+| Prometheus/health | `http://127.0.0.1:9090/metrics`、`/healthz` |
 
 設定會原子寫入 `data/config.json`。可從管理介面修改服務位址、快取、上游、網域、DNS 記錄及代理站台。
 
@@ -42,7 +45,46 @@ npm start
 node index.js
 ```
 
-Bootstrap 會從本倉庫最新 Release 取得 manifest，校驗完整 runtime 的 SHA-256 並快取至 `data/runtime`。可使用 `APP_MANIFEST_URL` 指向其他 HTTPS manifest。網路不可達時會重新校驗最後快取；沒有有效快取時啟動內嵌 fallback，提供自訂 A/AAAA、UDP/TCP DNS 與 DoH，但不提供管理介面及反向代理。
+Bootstrap 會從本倉庫最新 Release 取得 manifest，依 Node ABI／平台／架構選擇 `better-sqlite3` native binding，同時校驗 runtime 與 binding 的 SHA-256 並快取至 `data/runtime`。正式 Release 提供 Node 20、22、24 對應 ABI 的 Linux glibc x64／arm64 六組 binding。可使用 `APP_MANIFEST_URL` 指向其他 HTTPS manifest。網路不可達時會重新校驗最後有效 runtime 與 binding；沒有有效快取時啟動內嵌 fallback，提供自訂 A/AAAA、UDP/TCP DNS 與 DoH，但不提供管理介面及反向代理。
+
+## 可觀測性
+
+- SQLite 資料庫位於 `data/operations.sqlite`，採 WAL、schema migration、應用程式識別與 downgrade guard。設定仍以 `data/config.json` 為可攜來源。
+- Prometheus 預設只監聽 loopback 的 `9090`。若要公開 metrics，應先經受信代理與網路存取控制，不要直接暴露至公網。
+- 完整操作日誌位於 `data/logs/operations-YYYY-MM-DD.jsonl`，包含 client IP、DNS 名稱與代理 URL，預設保留 30 天，必須視為敏感資料。
+- Webhook 告警使用 HMAC event id，工作持久化於 SQLite，採指數退避；超過 24 小時進 dead-letter，可在管理介面重送。
+
+## 備份與還原
+
+管理介面的「可觀測性」頁可預覽、建立、下載、匯入、驗證、還原及刪除備份。排程依主機本機時區每日 03:00 建立 daily 備份，保留 7 份；週日另建立 weekly 備份，保留 4 份。
+
+備份位於 `data/backups`，ZIP 內含 `config.json`、`admin.json`、SQLite online backup、JSON 日誌與逐檔 SHA-256 manifest，預設排除 proxy cache 與 runtime cache。**備份是明文最高敏感資產，包含密碼雜湊、Tunnel token、完整操作資料及未來 API token；只能交由主機 owner 保存，傳輸與離站保存必須另行加密。**
+
+還原會先在維護模式外驗證 ZIP 路徑、大小、manifest、SHA 與 schema，再短暫暫停 DNS、DoH、proxy、metrics 與排程；成功後重新載入設定並恢復服務，任何檔案替換失敗會自動還原進入維護模式前的完整快照。
+
+## Docker Compose
+
+Docker image 使用 Debian bookworm、固定非 root UID/GID `10001`、唯讀 root filesystem、持久 data volume、健康檢查與 SIGTERM graceful stop：
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f s12-dns-server
+```
+
+`docker-compose.yml` 預設將 metrics 只發布至主機 `127.0.0.1:9090`。升級前先從 UI 建立並下載備份；升級可拉取／建置新 image 後重新 `docker compose up -d`。若健康檢查失敗，切回先前 image tag並還原升級前備份。
+
+## systemd
+
+在 Debian/Ubuntu 類 Linux 上，以 root 從專案目錄執行：
+
+```bash
+sh deploy/systemd/install.sh
+systemctl status s12-dns-server
+journalctl -u s12-dns-server -f
+```
+
+安裝器建立 `s12-dns` 專用帳號、`0700` 的 `/var/lib/s12-dns-server`，將 bootstrap 放至 `/opt/s12-dns-server`，並啟用具檔案系統與核心硬化的 service。升級或回滾時先備份，再替換 `/opt/s12-dns-server/index.js` 並 `systemctl restart s12-dns-server`；若新版本健康檢查或 migration 失敗，還原舊 `index.js` 與備份。
 
 ## Cloudflare Tunnel
 
@@ -113,6 +155,7 @@ npm run build
 - `dist/index.js`：標準庫單檔 bootstrap。
 - `dist/runtime.cjs`：包含管理 UI 的完整 runtime bundle。
 - `dist/manifest.json`：版本、runtime URL 與 SHA-256。
+- `dist/better-sqlite3-node-v<ABI>-<platform>-<arch>.node`：本機開發 binding；tag Release 另由 `scripts/native-bindings.js` 驗證並組裝六組正式 Linux binding。
 
 ## 安全邊界
 
