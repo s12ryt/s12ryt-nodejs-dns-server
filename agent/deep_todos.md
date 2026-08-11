@@ -80,3 +80,15 @@
 - [x] 完成 Docker Compose 非 root／唯讀／healthcheck／graceful stop，以及 systemd 專用帳號、權限、restart、journald與硬化設定。
 - [x] 完成 126 項單元／整合測試、9 項 E2E、lint、audit、31 個 src JS LSP 與六資產 production build 驗證。
 - [x] 發布並驗證 v0.2.0 Release、Linux Docker CI、六個 native assets、單檔冷啟動及 last-known-good rollback；runtime SHA-256 為 `1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
+
+## 2026-08-12：v0.3.0 DNS 與代理專業能力
+
+- [x] 完成 SOA wire、Primary Zone migration、`YYYYMMDDnn` serial、NXDOMAIN／NODATA authority SOA、wildcard、delegation 與 glue。
+- [x] 完成 record UUID、原子批次 CRUD，以及可預覽 merge／replace 的 BIND Zone file 匯入與穩定匯出。
+- [x] 完成 DNS Policy 的名稱、qtype、client CIDR、星期／時段／時區條件與 NXDOMAIN／REFUSED／A／AAAA／CNAME 動作。
+- [x] 完成 HTTPS Hosts 清單訂閱、last-known-good 原子快取、非阻塞更新、管理 API 與 UI。
+- [x] 完成 smooth weighted RR、主動健康、被動斷路器、明確備援、維護模式、排空與 30 天 SQLite 健康歷史。
+- [x] 完成 pooled HTTP/2 與自動 HTTP/1.1 降級、非阻塞 Shadow traffic、WebSocket 限制／統計／中止。
+- [x] 完成進階代理五步精靈、站台與 upstream 運行控制、健康歷史及完整自建 UI 流程。
+- [x] 完成 179 項單元／整合測試、12 項 E2E、lint、audit、37 個 src JS LSP 與 v0.3.0 build 驗證。
+- [ ] 發布並驗證 v0.3.0 Release、Linux CI、單檔冷啟動及 last-known-good rollback。
