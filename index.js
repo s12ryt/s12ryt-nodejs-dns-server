@@ -236,9 +236,16 @@ async function startFallback({
     try {
       let query;
       if (url.pathname !== "/dns-query") return response.writeHead(404).end();
+      response.setHeader("access-control-allow-origin", "*");
+      response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+      response.setHeader("access-control-allow-headers", "Content-Type, Accept");
+      if (request.method === "OPTIONS") return response.writeHead(204).end();
       if (request.method === "GET") query = Buffer.from(url.searchParams.get("dns") || "", "base64url");
       else if (request.method === "POST" && String(request.headers["content-type"] || "").split(";", 1)[0] === "application/dns-message") query = await readRequest(request);
-      else return response.writeHead(request.method === "POST" ? 415 : 405).end();
+      else {
+        if (request.method !== "POST") response.setHeader("allow", "GET, POST, OPTIONS");
+        return response.writeHead(request.method === "POST" ? 415 : 405).end();
+      }
       if (query.length < 12 || query.length > DNS_MESSAGE_LIMIT) return response.writeHead(400).end();
       response.writeHead(200, { "content-type": "application/dns-message", "cache-control": "no-store" }).end(await resolve(query));
     } catch { if (!response.headersSent) response.writeHead(400).end(); }

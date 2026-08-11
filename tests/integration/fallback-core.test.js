@@ -82,6 +82,8 @@ test("embedded fallback serves configured records over UDP, TCP and RFC 8484 DoH
   });
   assert.equal(getResponse.status, 200);
   assert.equal(postResponse.status, 200);
+  assert.equal(getResponse.headers.get("access-control-allow-origin"), "*");
+  assert.equal(postResponse.headers.get("access-control-allow-origin"), "*");
   responses.push(
     Buffer.from(await getResponse.arrayBuffer()),
     Buffer.from(await postResponse.arrayBuffer()),
@@ -93,4 +95,27 @@ test("embedded fallback serves configured records over UDP, TCP and RFC 8484 DoH
     assert.equal(message.answers[0].ttl, 90);
   }
   assert.equal(upstreamCalls, 0);
+
+  const preflight = await fetch(dohBase, {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://diagnostic.example",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "Content-Type, Accept",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+  assert.match(preflight.headers.get("access-control-allow-methods"), /OPTIONS/);
+  assert.match(preflight.headers.get("access-control-allow-headers"), /Content-Type/i);
+
+  const malformed = await fetch(`${dohBase}?dns=not-valid-wire`);
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.headers.get("access-control-allow-origin"), "*");
+
+  const missing = await fetch(`http://127.0.0.1:${service.addresses.doh.port}/missing`, {
+    headers: { Origin: "https://diagnostic.example" },
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("access-control-allow-origin"), null);
 });
