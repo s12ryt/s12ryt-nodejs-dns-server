@@ -1,15 +1,17 @@
 "use strict";
 
 const path = require("node:path");
+const fs = require("node:fs/promises");
 
 const { BackupManager } = require("./backup/manager");
 const { BackupScheduler } = require("./backup/scheduler");
-const { ConfigStore } = require("./admin/config-store");
+const { ConfigStore, validateConfig } = require("./admin/config-store");
 const { AuditService } = require("./admin/audit-service");
 const { applyDomainState } = require("./admin/domains");
 const { EventLog } = require("./admin/event-log");
 const { IdentityManager } = require("./admin/identity-manager");
 const { IdempotencyService } = require("./admin/idempotency-service");
+const { DiagnosticBundle } = require("./diagnostics/bundle");
 const { createAdminService } = require("./admin/server");
 const { DnsCache } = require("./dns/cache");
 const { PolicyStore } = require("./dns/policy");
@@ -30,6 +32,7 @@ const { createProxyService } = require("./services/proxy-server");
 const { ProxyCache } = require("./services/proxy-cache");
 const { ProxyHealthMonitor } = require("./services/proxy-health");
 const { ProxyRoutes } = require("./services/proxy-routes");
+const { RecoveryManager } = require("./recovery/manager");
 const { SqliteStore } = require("./storage/sqlite-store");
 const { ensureCloudflared } = require("./tunnel/download");
 const { TunnelManager } = require("./tunnel/manager");
@@ -85,6 +88,8 @@ function createRuntime({
   identityManagerFactory = (options) => new IdentityManager(options),
   auditServiceFactory = (options) => new AuditService(options),
   idempotencyServiceFactory = (options) => new IdempotencyService(options),
+  diagnosticBundleFactory = (options) => new DiagnosticBundle(options),
+  recoveryManagerFactory = (options) => new RecoveryManager(options),
   applicationVersion = APPLICATION_VERSION,
 } = {}) {
   const config = new ConfigStore({ directory });
@@ -321,6 +326,7 @@ function createRuntime({
 
   async function enterMaintenance() {
     if (maintenanceActive) throw new Error("Runtime is already in maintenance mode");
+    await components.recovery.begin("restore");
     maintenanceActive = true;
     maintenanceRestored = false;
     maintenanceTunnelWasActive = tunnelIsActive();
@@ -359,6 +365,7 @@ function createRuntime({
     maintenanceActive = false;
     maintenanceRestored = false;
     maintenanceTunnelWasActive = false;
+    await components.recovery.complete("restore");
   }
 
   return {
@@ -371,6 +378,9 @@ function createRuntime({
     clearTunnelToken,
     async start() {
       if (started) throw new Error("Runtime is already started");
+      components.recovery = recoveryManagerFactory({ directory });
+      await components.recovery.recover();
+      await components.recovery.begin("startup");
       const current = await config.load();
       const effective = applyDomainState(current);
       configureTunnel(current.tunnel.token);
@@ -451,6 +461,10 @@ function createRuntime({
         directory,
         storage: components.storage,
         applicationVersion,
+        validateConfiguration: (value) => validateConfig(value),
+        validateDatabase: (content, manifest) => components.storage.validateBackup(content, {
+          expectedSchemaVersion: manifest.databaseSchemaVersion,
+        }),
         maintenance: {
           enter: enterMaintenance,
           reload: reloadAfterRestore,
@@ -460,6 +474,23 @@ function createRuntime({
       components.backupScheduler = backupSchedulerFactory({
         manager: components.backups,
         onError: (error) => recordEvent({ kind: "backup-error", message: error.message }),
+      });
+      components.diagnostics = diagnosticBundleFactory({
+        directory,
+        applicationVersion,
+        getConfig: () => config.get(),
+        getRuntime: async () => {
+          try {
+            return JSON.parse(await fs.readFile(path.join(directory, "runtime", "active.json"), "utf8"));
+          } catch (error) {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          }
+        },
+        getStatus: status,
+        getStorage: () => components.storage.status(),
+        getAuditVerification: () => components.audit.verify(),
+        getEvents: () => events.list(),
       });
       services.admin = factories.admin({
         auth,
@@ -502,6 +533,7 @@ function createRuntime({
         },
         deleteBackup: (fileName) => components.backups.delete(fileName),
         restoreBackup: (fileName, options) => components.backups.restore(path.join(directory, "backups", fileName), options),
+        createDiagnosticBundle: () => components.diagnostics.create(),
         listPolicySubscriptions: () => components.policySubscriptions.status(),
         refreshPolicySubscription: (id) => components.policySubscriptions.refresh(id),
         ...current.admin,
@@ -538,10 +570,12 @@ function createRuntime({
           recordEvent({ kind: "tunnel-error", message: `Automatic Tunnel startup failed: ${error.message}` });
         }
       }
+      await components.recovery.complete("startup");
       return status();
     },
     async close() {
       if (!started) return;
+      await components.recovery.begin("shutdown");
       components.backupScheduler?.close();
       components.proxyHealth?.close();
       await components.telemetry?.close().catch(() => {});
@@ -554,6 +588,7 @@ function createRuntime({
       unsubscribe?.();
       unsubscribe = null;
       started = false;
+      await components.recovery.complete("shutdown");
     },
   };
 }

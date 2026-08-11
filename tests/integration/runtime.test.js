@@ -79,7 +79,15 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   let proxyHealthOptions;
   let auditOptions;
   let idempotencyOptions;
+  let diagnosticOptions;
+  let backupManagerOptions;
   const backupCalls = [];
+  const backupValidations = [];
+  const recovery = {
+    async recover() { lifecycle.push("recover:runtime"); return { recovered: false }; },
+    async begin(operation) { lifecycle.push(`begin:${operation}`); },
+    async complete(operation) { lifecycle.push(`complete:${operation}`); },
+  };
   const sqliteStore = {
     open() { lifecycle.push("start:sqlite"); return { open: true, schemaVersion: 1, journalMode: "wal", integrity: "ok" }; },
     close() { lifecycle.push("close:sqlite"); },
@@ -96,6 +104,10 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     reserveIdempotency() { return { state: "started" }; },
     completeIdempotency() {},
     abandonIdempotency() {},
+    async validateBackup(content, options) {
+      backupValidations.push({ content, options });
+      return { integrity: "ok", schemaVersion: options.expectedSchemaVersion };
+    },
   };
   const metrics = {
     observe() {},
@@ -163,6 +175,7 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     },
     proxyCacheFactory: () => proxyCache,
     sqliteStoreFactory: () => sqliteStore,
+    recoveryManagerFactory: () => recovery,
     identityManagerFactory: () => fakeIdentityManager(lifecycle),
     auditServiceFactory: (options) => {
       auditOptions = options;
@@ -171,6 +184,10 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     idempotencyServiceFactory: (options) => {
       idempotencyOptions = options;
       return { execute() {} };
+    },
+    diagnosticBundleFactory: (options) => {
+      diagnosticOptions = options;
+      return { async create() { return { fileName: "s12-diagnostic.zip", path: "diagnostic.zip", size: 42 }; } };
     },
     metricsRegistryFactory: () => metrics,
     structuredLoggerFactory: () => logger,
@@ -219,6 +236,7 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
       };
     },
     backupManagerFactory: (options) => {
+      backupManagerOptions = options;
       assert.equal(options.storage, sqliteStore);
       assert.equal(options.directory, directory);
       return backupManager;
@@ -247,6 +265,8 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
 
   await runtime.start();
   assert.deepEqual(lifecycle, [
+    "recover:runtime",
+    "begin:startup",
     "start:sqlite",
     "load:identity",
     "start:proxy-cache",
@@ -259,6 +279,7 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     "start:telemetry",
     "start:proxy-health",
     "start:backup-scheduler",
+    "complete:startup",
   ]);
   assert.match(output.join("\n"), /setup token/i);
   assert.equal(runtime.status().services.dns.port, 1000);
@@ -272,6 +293,28 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   assert.equal(typeof adminOptions.audit.record, "function");
   assert.equal(idempotencyOptions.storage, sqliteStore);
   assert.equal(typeof adminOptions.idempotency.execute, "function");
+  assert.equal(diagnosticOptions.applicationVersion, require("../../package.json").version);
+  assert.equal(diagnosticOptions.directory, directory);
+  assert.deepEqual(diagnosticOptions.getConfig(), runtime.config.get());
+  assert.deepEqual(diagnosticOptions.getStorage(), sqliteStore.status());
+  assert.deepEqual(diagnosticOptions.getAuditVerification(), { valid: true });
+  assert.equal(Array.isArray(diagnosticOptions.getEvents()), true);
+  assert.equal(typeof diagnosticOptions.getStatus, "function");
+  assert.equal(typeof diagnosticOptions.getRuntime, "function");
+  assert.deepEqual(await adminOptions.createDiagnosticBundle(), {
+    fileName: "s12-diagnostic.zip", path: "diagnostic.zip", size: 42,
+  });
+  assert.equal(typeof backupManagerOptions.validateConfiguration, "function");
+  assert.equal(typeof backupManagerOptions.validateDatabase, "function");
+  assert.equal(backupManagerOptions.validateConfiguration(runtime.config.get()).schemaVersion, 3);
+  const databaseContent = Buffer.from("sqlite-backup");
+  assert.deepEqual(await backupManagerOptions.validateDatabase(databaseContent, {
+    databaseSchemaVersion: 6,
+  }), { integrity: "ok", schemaVersion: 6 });
+  assert.deepEqual(backupValidations, [{
+    content: databaseContent,
+    options: { expectedSchemaVersion: 6 },
+  }]);
   assert.equal(configVersions.length, 1);
   assert.deepEqual(configVersions[0].context, { source: "startup", actor: "system" });
   assert.equal(proxyOptions.cache, proxyCache);
@@ -401,7 +444,8 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   assert.equal(runtime.components.routes.resolve("app.test").url.port, "9000");
 
   await runtime.close();
-  assert.deepEqual(lifecycle.slice(-13), [
+  assert.deepEqual(lifecycle.slice(-15), [
+    "begin:shutdown",
     "close:backup-scheduler",
     "close:proxy-health",
     "close:telemetry",
@@ -415,6 +459,7 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     "close:proxy-cache",
     "close:sqlite",
     "close:tunnel",
+    "complete:shutdown",
   ]);
 });
 
@@ -423,6 +468,11 @@ test("runtime maintenance pauses public services and reloads restored state with
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const lifecycle = [];
   let backupOptions;
+  const recovery = {
+    async recover() { lifecycle.push("recover:runtime"); },
+    async begin(operation) { lifecycle.push(`begin:${operation}`); },
+    async complete(operation) { lifecycle.push(`complete:${operation}`); },
+  };
   const storage = {
     open() { lifecycle.push("open:sqlite"); return { open: true, schemaVersion: 2 }; },
     close() { lifecycle.push("close:sqlite"); },
@@ -446,6 +496,7 @@ test("runtime maintenance pauses public services and reloads restored state with
     directory,
     output: () => {},
     sqliteStoreFactory: () => storage,
+    recoveryManagerFactory: () => recovery,
     identityManagerFactory: () => fakeIdentityManager(),
     proxyCacheFactory: () => proxyCache,
     serviceFactories: Object.fromEntries(
@@ -482,7 +533,7 @@ test("runtime maintenance pauses public services and reloads restored state with
 
   await backupOptions.maintenance.enter();
   assert.deepEqual(lifecycle, [
-    "pause:backup-scheduler", "pause:proxy-health", "close:telemetry", "close:health",
+    "begin:restore", "pause:backup-scheduler", "pause:proxy-health", "close:telemetry", "close:health",
     "close:metrics", "close:proxy", "close:doh", "close:dns", "close:proxy-cache",
   ]);
   assert.equal(lifecycle.includes("close:admin"), false);
@@ -492,7 +543,7 @@ test("runtime maintenance pauses public services and reloads restored state with
   await backupOptions.maintenance.exit();
   assert.deepEqual(lifecycle, [
     "start:proxy-cache", "start:dns", "start:doh", "start:proxy", "start:metrics",
-    "start:telemetry", "start:health", "start:proxy-health", "start:backup-scheduler",
+    "start:telemetry", "start:health", "start:proxy-health", "start:backup-scheduler", "complete:restore",
   ]);
   await runtime.close();
 });
