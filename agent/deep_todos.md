@@ -59,3 +59,12 @@
 - [x] 完成網域改名後保持選取、刪除目前網域後回空白，以及未選取時禁止新增。
 - [x] 完成 74 項單元／整合測試、6 項 E2E、lint、audit、LSP 與 v0.1.4 build 驗證。
 - [x] 發布並驗證 v0.1.4 Release、GitHub CI 與單檔冷啟動；runtime SHA-256 為 `8663391dbf140a31e4092f8c0b92e86cb11b569660ed91f357d9ba5890454fbf`。
+
+## 2026-08-11：公開 DoH CORS 與 CNAME 熱更新
+
+- [x] 以公開 endpoint、curl 與真實瀏覽器確認 `Failed to fetch` 是缺少 CORS，並確認 endpoint 本身可達。
+- [x] 確認實際記錄為 `awa.16516565.tw CNAME chatgpt.com`；查詢根 `16516565.tw` 得到 NXDOMAIN 屬精確名稱語意。
+- [x] 先以整合與 Playwright 測試重現 OPTIONS 405、缺少 CORS header 及瀏覽器跨來源失敗。
+- [x] 完整 runtime 與內嵌 fallback 的 `/dns-query` 均支援無憑證 CORS、OPTIONS preflight，以及成功／錯誤回應一致 headers。
+- [x] 補強 CNAME 設定原子更新後不重啟立即命中，且重新載入仍保留的 characterization test。
+- [x] 完成 75 項單元／整合測試、7 項 E2E、lint、audit、LSP 與 v0.1.5 build 驗證。
