@@ -57,3 +57,5 @@
 - 完成選取範圍內記錄新增、編輯、停用、刪除與 reload 持久化；拒絕從父工作區建立會直接歸屬子工作區的名稱。
 - 完成網域改名後維持新網域選取、刪除目前網域後回初始空白，以及未選取時停用新增記錄。
 - 回歸結果：Node 單元／整合 74/74、Playwright 6/6、ESLint、npm audit、23 個 src JS LSP 均通過；v0.1.4 build runtime SHA-256 為 `8663391dbf140a31e4092f8c0b92e86cb11b569660ed91f357d9ba5890454fbf`。
+- 推送 7 個需求、UI、版本與文件原子提交，建立 `v0.1.4` tag；GitHub Actions run `31475147999` 的 Node 20/22/24、Playwright 與 Release jobs 全部成功。
+- `v0.1.4` Release 發布三項資產；全新暫存目錄初始只含 Release `index.js`，冷啟動後管理 API 回應 HTTP 200，active cache 版本為 0.1.4，下載 runtime、manifest 與 Release SHA-256 相符；程序與暫存目錄已清理。
