@@ -223,7 +223,8 @@ class BackupManager {
       await fsPromises.chmod(destination, 0o600).catch((error) => {
         if (process.platform !== "win32") throw error;
       });
-      return { dryRun: false, fileName, path: destination, manifest };
+      const archiveStat = await fsPromises.stat(destination);
+      return { dryRun: false, fileName, path: destination, size: archiveStat.size, manifest };
     } catch (error) {
       await fsPromises.rm(temporaryArchive, { force: true }).catch(() => {});
       throw error;
@@ -312,7 +313,7 @@ class BackupManager {
   async restore(filePath, { dryRun = false } = {}) {
     const archive = await this.inspect(filePath);
     const names = Object.keys(archive.files).sort();
-    for (const required of ["admin.json", "config.json", "operations.sqlite"]) {
+    for (const required of ["config.json", "operations.sqlite"]) {
       if (!names.includes(required)) throw new Error(`Backup is missing required file: ${required}`);
     }
     if (names.some((name) => !portableEntryName(name))) {
@@ -417,6 +418,9 @@ class BackupManager {
 
   async #applyStaging(stagingDirectory, names) {
     await fsPromises.rm(path.join(this.directory, "logs"), { recursive: true, force: true });
+    if (!names.includes("admin.json")) {
+      await fsPromises.rm(path.join(this.directory, "admin.json"), { force: true });
+    }
     for (const name of names) {
       const source = path.join(stagingDirectory, ...name.split("/"));
       const destination = path.join(this.directory, ...name.split("/"));

@@ -79,6 +79,8 @@ test("backup archive has a verified manifest and excludes caches and runtime ass
 
   const result = await manager.create({ kind: "manual" });
   assert.equal(result.fileName, "s12-manual-20260811T030000Z.zip");
+  assert.equal(Number.isSafeInteger(result.size), true);
+  assert.equal(result.size > 0, true);
   assert.equal(backupCalls.length, 1);
   const archive = await manager.inspect(result.path);
   assert.equal(archive.manifest.formatVersion, 1);
