@@ -5,9 +5,9 @@
 ## 功能
 
 - 可點選的自訂網域工作區，以及 A、AAAA、CNAME、MX、TXT、NS、SRV 記錄的完整新增、編輯、停用與刪除流程。
-- CNAME 完整答案鏈、Cloudflare/Google DoH 依序容錯、定期上游健康探測，以及有界 LRU/TTL 快取。
+- Primary Zone、SOA、權威 NXDOMAIN／NODATA、delegation／glue、Zone file，以及 CNAME 完整答案鏈與多上游容錯。
 - 同埠 UDP/TCP DNS，以及支援 GET、POST、瀏覽器 CORS preflight 的 `/dns-query` DoH。
-- 具 Host alias、path location、rewrite、header、安全限制、多上游、持久快取、壓縮與 WebSocket 的 Nginx 式反向代理。
+- 具權重、主備池、健康檢查、斷路器、HTTP/2、排空、Shadow、持久快取、壓縮與 WebSocket 控制的 Nginx 式反向代理。
 - 首次一次性 token 設密、PBKDF2、HttpOnly session、CSRF 與登入限速。
 - 響應式深淺色管理介面，提供 DNS 診斷、核心服務健康摘要、全自建對話元件、即時操作回饋、鍵盤導覽，以及 cloudflared 下載、校驗、啟停與日誌。
 - SQLite WAL 持久化設定歷史、聚合指標與 Webhook 工作，另提供 Prometheus、每日結構化 JSON 日誌及 24 小時／7 天／30 天趨勢。
@@ -127,6 +127,9 @@ node index.js
 - DNS 診斷支援 A、AAAA、CNAME、MX、TXT、NS、SRV，顯示 rcode、命中來源與完整答案鏈，不會修改設定。
 - DNS 名稱必須精確匹配。若記錄為 `awa.example.com CNAME target.example`，查詢 `example.com` 不會自動猜測 `awa`，沒有根記錄時回 NXDOMAIN 是預期結果。
 - 管理介面新增或修改已啟用記錄後會立即熱更新解析器並原子持久化，不需要重新啟動 S12。
+- 每個工作區同時是可編輯的 Primary Zone，具自動遞增 SOA serial；區域內不存在名稱回 NXDOMAIN，名稱存在但類型不存在回 NODATA，兩者都帶 authority SOA。
+- Zone file 支援 `$ORIGIN`、`$TTL`、SOA、A、AAAA、CNAME、MX、TXT、NS、SRV 的預覽式 merge／replace 匯入，以及穩定可重匯入的 BIND 格式匯出。
+- DNS Policy 可依 exact／suffix／wildcard 名稱、qtype、client CIDR、星期、時段與 IANA 時區執行 NXDOMAIN、REFUSED、A／AAAA 或 CNAME 動作；HTTPS Hosts 清單訂閱使用 last-known-good 原子快取，更新失敗不影響解析。
 
 ## 代理站台
 
@@ -134,7 +137,10 @@ node index.js
 
 - location 可代理至一個或多個 HTTP(S) target，或由自訂 A/AAAA 記錄推導目標；也可回傳 301、302、307、308 redirect。
 - rewrite 支援 strip prefix 或 replace prefix；request/response header 可使用受控 set/remove 及安全白名單變數，不執行任意表達式。
-- 多上游採等權 round-robin，對連線錯誤、timeout、502、503、504 被動暫停故障節點；安全方法可改試下一個健康節點。
+- 多上游採 smooth weighted round-robin，主動健康檢查與被動斷路器共同隔離故障；可設定明確備援池，安全方法自動切換，寫入方法需明確允許。
+- HTTPS upstream 支援 pooled HTTP/2 與自動降級 HTTP/1.1；Shadow traffic 可取樣鏡像至獨立上游，剝除敏感 headers，且不等待、不重試、不影響主要回應。
+- 站台維護模式回傳 503／Retry-After；站台或單一 upstream 可暫態排空、恢復及中止既有 HTTP／WebSocket 連線。WebSocket 可限制連線數、閒置時間與排空寬限。
+- 管理介面顯示主動／被動健康、延遲、斷路器與 30 天 SQLite 狀態歷史，並提供站台及 upstream 排空控制。
 - 每個 location 可設定 request body 上限、IP allow/deny、記憶體 rate limit、持久 proxy cache 與壓縮。預設 body 上限為 10 MiB、rate limit 與 cache 關閉。
 - proxy cache 位於 `data/proxy-cache`，預設全域上限 1 GiB；遵守 `Cache-Control` 與 `Vary`，不快取含 Authorization、Cookie、Set-Cookie、private 或 no-store 的回應。
 - 對可壓縮且至少 1 KiB 的未壓縮回應，依 `Accept-Encoding` 協商 Brotli 或 gzip。
@@ -165,7 +171,7 @@ npm run build
 - 磁碟 proxy cache 可能保存上游公開回應內容；應將 `data/proxy-cache` 納入主機資料保護與容量監控。
 - DNSSEC 僅透傳，不在本機驗證。
 - 不支援 AXFR/IXFR、RFC 2136 動態更新或本機 TLS 憑證管理。
-- 即時事件只保留於記憶體，最多 500 筆；不永久保存 DNS 查詢內容。
+- 即時事件在記憶體最多保留 500 筆；完整 DNS 名稱、client IP 與代理 URL 另依可觀測性契約寫入 owner-only JSON 日誌，預設保留 30 天。
 
 ## 授權
 
