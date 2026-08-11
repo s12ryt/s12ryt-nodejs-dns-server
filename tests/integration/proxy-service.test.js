@@ -267,7 +267,8 @@ test("reverse proxy enforces body, access and rate limits before upstream work",
       { path: "/limited", match: "exact", upstreams: [{ target }], rateLimit: { enabled: true, requests: 1, windowMs: 60000 } },
     ],
   }]);
-  const proxy = createProxyService({ routes, host: "127.0.0.1", port: 0 });
+  const events = [];
+  const proxy = createProxyService({ routes, host: "127.0.0.1", port: 0, onEvent: (event) => events.push(event) });
   await proxy.start();
   t.after(() => proxy.close());
 
@@ -278,6 +279,14 @@ test("reverse proxy enforces body, access and rate limits before upstream work",
   assert.equal(limited.status, 429);
   assert.equal(limited.headers["retry-after"], "60");
   assert.equal(upstreamCalls, 1);
+  assert.deepEqual(events.filter((event) => event.kind === "proxy").map((event) => event.statusCode), [413, 403, 200, 429]);
+  assert.equal(events.filter((event) => event.kind === "proxy").every((event) => (
+    event.host === "secure.test"
+    && event.clientIp === "127.0.0.1"
+    && event.method
+    && event.url
+    && Number.isFinite(event.durationMs)
+  )), true);
 });
 
 test("reverse proxy serves persistent cache hits and negotiates response compression", async (t) => {

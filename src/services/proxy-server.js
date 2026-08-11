@@ -349,6 +349,24 @@ function createProxyService({
     async start() {
       if (server) throw new Error("Proxy service is already started");
       server = http.createServer((request, response) => {
+        const startedAt = process.hrtime.bigint();
+        let context;
+        try {
+          context = requestContext(request, trustedProxyCidrs);
+        } catch {
+          context = { host: "invalid", clientIp: normalizeIp(request.socket.remoteAddress) || "unknown" };
+        }
+        response.once("finish", () => {
+          onEvent({
+            kind: "proxy",
+            host: context.host,
+            clientIp: context.clientIp,
+            method: request.method,
+            url: request.url,
+            statusCode: response.statusCode,
+            durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+          });
+        });
         const route = selectRoute(request, response);
         if (!route) return;
         handleHttpRequest(request, response, route).catch((error) => {
