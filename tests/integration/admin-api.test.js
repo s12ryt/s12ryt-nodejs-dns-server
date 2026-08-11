@@ -342,3 +342,190 @@ test("admin API persists Tunnel tokens without returning their plaintext", async
   assert.equal(cleared.body.hasStoredToken, false);
   assert.equal(config.get().tunnel.token, "");
 });
+
+test("admin API protects observability secrets and manages metric history and webhook retries", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-api-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const auth = new AuthManager({ directory });
+  const config = new ConfigStore({ directory });
+  await auth.load();
+  const initial = await config.load();
+  initial.observability.webhook = {
+    enabled: true,
+    url: "https://alerts.example.test/s12",
+    secret: "stored-webhook-secret",
+  };
+  await config.update(initial);
+  await auth.setup(auth.createSetupToken(), "correct horse battery");
+  const metricWindows = [];
+  const retryIds = [];
+  const updateWebhooks = [];
+  const service = createAdminService({
+    auth,
+    config,
+    tunnel: fakeTunnel(),
+    getMetricHistory: async (window) => {
+      metricWindows.push(window);
+      return [{ metric: "dns_queries_total", labels: { source: "custom" }, value: 9 }];
+    },
+    listWebhookJobs: ({ state }) => [{ id: "job-dead", state, attempts: 3 }],
+    retryWebhookJob: async (id) => { retryIds.push(id); return { id, state: "pending" }; },
+    updateWebhookConfig: async (value) => { updateWebhooks.push(value); return value; },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  await service.start();
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.address().port}`;
+  const login = await jsonRequest(base, "/api/login", {
+    method: "POST", body: { username: "admin", password: "correct horse battery" },
+  });
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  const csrf = login.body.csrf;
+
+  const exposed = await jsonRequest(base, "/api/config", { cookie });
+  assert.equal(JSON.stringify(exposed.body).includes("stored-webhook-secret"), false);
+  assert.deepEqual(exposed.body.observability.webhook, {
+    enabled: true,
+    url: "https://alerts.example.test/s12",
+    hasSecret: true,
+  });
+  const roundTrip = await jsonRequest(base, "/api/config", {
+    method: "PUT", cookie, csrf, body: exposed.body,
+  });
+  assert.equal(roundTrip.status, 200);
+  assert.equal(config.get().observability.webhook.secret, "stored-webhook-secret");
+
+  assert.equal((await jsonRequest(base, "/api/observability/metrics?window=bad", { cookie })).status, 400);
+  const metrics = await jsonRequest(base, "/api/observability/metrics?window=24h", { cookie });
+  assert.equal(metrics.status, 200);
+  assert.equal(metrics.body[0].value, 9);
+  assert.deepEqual(metricWindows, ["24h"]);
+
+  const webhooks = await jsonRequest(base, "/api/observability/webhooks?state=dead-letter", { cookie });
+  assert.equal(webhooks.status, 200);
+  assert.equal(webhooks.body[0].state, "dead-letter");
+  assert.equal((await jsonRequest(base, "/api/observability/webhooks/job-dead/retry", {
+    method: "POST", cookie,
+  })).status, 403);
+  assert.equal((await jsonRequest(base, "/api/observability/webhooks/job-dead/retry", {
+    method: "POST", cookie, csrf,
+  })).status, 200);
+  assert.deepEqual(retryIds, ["job-dead"]);
+
+  assert.equal((await jsonRequest(base, "/api/observability/webhook", {
+    method: "PUT",
+    cookie,
+    csrf,
+    body: { enabled: true, url: "https://next.example.test/hook", secret: "" },
+  })).status, 400);
+  const updated = await jsonRequest(base, "/api/observability/webhook", {
+    method: "PUT",
+    cookie,
+    csrf,
+    body: { enabled: true, url: "https://next.example.test/hook", secret: "next-secret" },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(JSON.stringify(updated.body).includes("next-secret"), false);
+  assert.deepEqual(updateWebhooks, [{ enabled: true, url: "https://next.example.test/hook", secret: "next-secret" }]);
+});
+
+test("admin API manages and downloads owner-sensitive backups", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-admin-api-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const auth = new AuthManager({ directory });
+  const config = new ConfigStore({ directory });
+  await auth.load();
+  await config.load();
+  await auth.setup(auth.createSetupToken(), "correct horse battery");
+  const archivePath = path.join(directory, "s12-manual-20260811T030000Z.zip");
+  await fs.writeFile(archivePath, "sensitive backup bytes");
+  const calls = [];
+  const fileName = path.basename(archivePath);
+  const service = createAdminService({
+    auth,
+    config,
+    tunnel: fakeTunnel(),
+    listBackups: async () => [{ fileName, size: 22 }],
+    createBackup: async (options) => { calls.push(["create", options]); return { fileName, ...options }; },
+    importBackup: async (stream, options) => {
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      calls.push(["import", options, Buffer.concat(chunks).toString("utf8")]);
+      return { fileName: options.fileName, imported: true };
+    },
+    getBackupDownload: async (name) => { calls.push(["download", name]); return { fileName: name, path: archivePath }; },
+    deleteBackup: async (name) => { calls.push(["delete", name]); return { fileName: name, deleted: true }; },
+    restoreBackup: async (name, options) => { calls.push(["restore", name, options]); return { restored: !options.dryRun, dryRun: options.dryRun }; },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  await service.start();
+  t.after(() => service.close());
+  const base = `http://127.0.0.1:${service.address().port}`;
+  const login = await jsonRequest(base, "/api/login", {
+    method: "POST", body: { username: "admin", password: "correct horse battery" },
+  });
+  const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  const csrf = login.body.csrf;
+
+  assert.equal((await jsonRequest(base, "/api/backups")).status, 401);
+  assert.equal((await jsonRequest(base, "/api/backups", { cookie })).body[0].fileName, fileName);
+  assert.equal((await jsonRequest(base, "/api/backups", {
+    method: "POST", cookie, body: { dryRun: true },
+  })).status, 403);
+  const dryRun = await jsonRequest(base, "/api/backups", {
+    method: "POST", cookie, csrf, body: { dryRun: true },
+  });
+  assert.equal(dryRun.status, 200);
+  assert.equal(dryRun.body.dryRun, true);
+  const created = await jsonRequest(base, "/api/backups", {
+    method: "POST", cookie, csrf, body: {},
+  });
+  assert.equal(created.status, 201);
+
+  const uploadName = "s12-upload-20260811T031500Z.zip";
+  assert.equal((await fetch(`${base}/api/backups/upload`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json", "x-backup-filename": uploadName },
+    body: "zip bytes",
+  })).status, 415);
+  assert.equal((await fetch(`${base}/api/backups/upload`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf, "content-type": "application/zip" },
+    body: "zip bytes",
+  })).status, 400);
+  const uploaded = await fetch(`${base}/api/backups/upload`, {
+    method: "POST",
+    headers: { cookie, "x-csrf-token": csrf, "content-type": "application/zip", "x-backup-filename": uploadName },
+    body: "zip bytes",
+  });
+  assert.equal(uploaded.status, 201);
+  assert.equal((await uploaded.json()).fileName, uploadName);
+
+  const download = await fetch(`${base}/api/backups/${fileName}/download`, {
+    headers: { cookie },
+  });
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get("content-type"), "application/zip");
+  assert.match(download.headers.get("content-disposition"), /attachment/);
+  assert.equal(await download.text(), "sensitive backup bytes");
+
+  assert.equal((await jsonRequest(base, `/api/backups/${fileName}/restore`, {
+    method: "POST", cookie, csrf, body: { dryRun: true },
+  })).body.dryRun, true);
+  assert.equal((await jsonRequest(base, `/api/backups/${fileName}`, {
+    method: "DELETE", cookie, csrf,
+  })).status, 200);
+  assert.equal((await jsonRequest(base, "/api/backups/..%2Fconfig.json", {
+    method: "DELETE", cookie, csrf,
+  })).status, 400);
+  assert.deepEqual(calls, [
+    ["create", { kind: "manual", dryRun: true }],
+    ["create", { kind: "manual", dryRun: false }],
+    ["import", { fileName: uploadName }, "zip bytes"],
+    ["download", fileName],
+    ["restore", fileName, { dryRun: true }],
+    ["delete", fileName],
+  ]);
+});

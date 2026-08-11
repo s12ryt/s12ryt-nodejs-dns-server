@@ -11,6 +11,9 @@ const { normalizeHost } = require("../services/proxy-routes");
 const COOKIE_NAME = "s12_session";
 const MAX_JSON_BODY = 1024 * 1024;
 const DIAGNOSTIC_TYPES = new Set(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"]);
+const METRIC_WINDOWS = new Set(["24h", "7d", "30d"]);
+const WEBHOOK_STATES = new Set(["pending", "delivered", "dead-letter"]);
+const BACKUP_FILE_PATTERN = /^s12-[a-z][a-z0-9-]*-\d{8}T\d{6}Z\.zip$/;
 
 function parseCookies(header) {
   return Object.fromEntries(String(header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
@@ -62,7 +65,23 @@ function sessionCookie(id, { clear = false } = {}) {
 function publicConfig(value) {
   const result = structuredClone(value);
   result.tunnel = { hasStoredToken: Boolean(value.tunnel?.token) };
+  const webhook = value.observability?.webhook;
+  if (webhook) {
+    result.observability.webhook = {
+      enabled: webhook.enabled,
+      url: webhook.url,
+      hasSecret: Boolean(webhook.secret),
+    };
+  }
   return result;
+}
+
+function publicWebhook(value) {
+  return {
+    enabled: Boolean(value?.enabled),
+    url: String(value?.url || ""),
+    hasSecret: Boolean(value?.secret),
+  };
 }
 
 function redactSecret(value, secret) {
@@ -80,6 +99,36 @@ function sendStatic(response, fileName, content) {
   }).end(content);
 }
 
+function backupFileName(pathname) {
+  const value = decodeURIComponent(pathname);
+  if (!BACKUP_FILE_PATTERN.test(value)) {
+    throw Object.assign(new Error("Backup file name is invalid"), { statusCode: 400 });
+  }
+  return value;
+}
+
+async function sendBackupDownload(response, descriptor) {
+  if (!descriptor || typeof descriptor.path !== "string" || !descriptor.path) {
+    throw Object.assign(new Error("Backup download is unavailable"), { statusCode: 404 });
+  }
+  const fileName = backupFileName(descriptor.fileName);
+  const stat = await fs.promises.stat(descriptor.path);
+  response.writeHead(200, {
+    "content-type": "application/zip",
+    "content-disposition": `attachment; filename="${fileName}"`,
+    "content-length": stat.size,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(descriptor.path);
+    stream.once("error", reject);
+    response.once("error", reject);
+    response.once("finish", resolve);
+    stream.pipe(response);
+  });
+}
+
 function createAdminService({
   auth,
   config,
@@ -88,6 +137,16 @@ function createAdminService({
   clearTunnelToken,
   diagnoseDns,
   clearProxyCache,
+  getMetricHistory,
+  listWebhookJobs,
+  retryWebhookJob,
+  updateWebhookConfig,
+  listBackups,
+  createBackup,
+  importBackup,
+  getBackupDownload,
+  deleteBackup,
+  restoreBackup,
   events = new EventLog(),
   status = () => ({}),
   staticDirectory = path.join(__dirname, "..", "web"),
@@ -156,7 +215,15 @@ function createAdminService({
     } else if (request.method === "PUT" && url.pathname === "/api/config") {
       try {
         const body = await readJsonBody(request);
-        const updated = await config.update({ ...body, tunnel: config.get().tunnel });
+        const current = config.get();
+        const updated = await config.update({
+          ...body,
+          tunnel: current.tunnel,
+          observability: {
+            ...body.observability,
+            webhook: current.observability.webhook,
+          },
+        });
         events.add({ kind: "config", message: "Configuration updated" });
         sendJson(response, 200, publicConfig(updated));
       } catch (error) {
@@ -166,6 +233,148 @@ function createAdminService({
       sendJson(response, 200, status());
     } else if (request.method === "GET" && url.pathname === "/api/events") {
       sendJson(response, 200, events.list());
+    } else if (url.pathname === "/api/backups" && request.method === "GET") {
+      try {
+        if (typeof listBackups !== "function") throw Object.assign(new Error("Backups are unavailable"), { statusCode: 501 });
+        sendJson(response, 200, await listBackups());
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (url.pathname === "/api/backups" && request.method === "POST") {
+      try {
+        if (typeof createBackup !== "function") throw Object.assign(new Error("Backup creation is unavailable"), { statusCode: 501 });
+        const body = await readJsonBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || (body.dryRun !== undefined && typeof body.dryRun !== "boolean")) {
+          throw Object.assign(new Error("Backup request is invalid"), { statusCode: 400 });
+        }
+        const dryRun = body.dryRun === true;
+        const result = await createBackup({ kind: "manual", dryRun });
+        events.add({ kind: "backup", message: dryRun ? "Backup dry-run completed" : "Manual backup created" });
+        sendJson(response, dryRun ? 200 : 201, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (url.pathname === "/api/backups/upload" && request.method === "POST") {
+      try {
+        if (typeof importBackup !== "function") throw Object.assign(new Error("Backup imports are unavailable"), { statusCode: 501 });
+        if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/zip")) {
+          throw Object.assign(new Error("Content-Type must be application/zip"), { statusCode: 415 });
+        }
+        const fileName = backupFileName(String(request.headers["x-backup-filename"] || ""));
+        const result = await importBackup(request, { fileName });
+        events.add({ kind: "backup", message: "External backup imported" });
+        sendJson(response, 201, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (url.pathname.startsWith("/api/backups/") && request.method === "GET" && url.pathname.endsWith("/download")) {
+      try {
+        if (typeof getBackupDownload !== "function") throw Object.assign(new Error("Backup downloads are unavailable"), { statusCode: 501 });
+        const encoded = url.pathname.slice("/api/backups/".length, -"/download".length);
+        const fileName = backupFileName(encoded);
+        await sendBackupDownload(response, await getBackupDownload(fileName));
+      } catch (error) {
+        if (!response.headersSent) sendJson(response, error.code === "ENOENT" ? 404 : (error.statusCode || 400), { error: error.message });
+        else response.destroy();
+      }
+    } else if (url.pathname.startsWith("/api/backups/") && request.method === "POST" && url.pathname.endsWith("/restore")) {
+      try {
+        if (typeof restoreBackup !== "function") throw Object.assign(new Error("Backup restore is unavailable"), { statusCode: 501 });
+        const encoded = url.pathname.slice("/api/backups/".length, -"/restore".length);
+        const fileName = backupFileName(encoded);
+        const body = await readJsonBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || (body.dryRun !== undefined && typeof body.dryRun !== "boolean")) {
+          throw Object.assign(new Error("Backup restore request is invalid"), { statusCode: 400 });
+        }
+        const dryRun = body.dryRun === true;
+        const result = await restoreBackup(fileName, { dryRun });
+        events.add({ kind: "backup", message: dryRun ? "Backup restore dry-run completed" : "Backup restored" });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (url.pathname.startsWith("/api/backups/") && request.method === "DELETE") {
+      try {
+        if (typeof deleteBackup !== "function") throw Object.assign(new Error("Backup deletion is unavailable"), { statusCode: 501 });
+        const fileName = backupFileName(url.pathname.slice("/api/backups/".length));
+        const result = await deleteBackup(fileName);
+        events.add({ kind: "backup", message: "Backup deleted" });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/observability/metrics") {
+      try {
+        if (typeof getMetricHistory !== "function") {
+          throw Object.assign(new Error("Metric history is unavailable"), { statusCode: 501 });
+        }
+        const window = url.searchParams.get("window") || "24h";
+        if (!METRIC_WINDOWS.has(window)) {
+          throw Object.assign(new Error("Metric history window is invalid"), { statusCode: 400 });
+        }
+        sendJson(response, 200, await getMetricHistory(window));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "GET" && url.pathname === "/api/observability/webhooks") {
+      try {
+        if (typeof listWebhookJobs !== "function") {
+          throw Object.assign(new Error("Webhook history is unavailable"), { statusCode: 501 });
+        }
+        const state = url.searchParams.get("state") || undefined;
+        if (state !== undefined && !WEBHOOK_STATES.has(state)) {
+          throw Object.assign(new Error("Webhook state is invalid"), { statusCode: 400 });
+        }
+        sendJson(response, 200, await listWebhookJobs({ state }));
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "POST"
+      && url.pathname.startsWith("/api/observability/webhooks/")
+      && url.pathname.endsWith("/retry")) {
+      try {
+        if (typeof retryWebhookJob !== "function") {
+          throw Object.assign(new Error("Webhook retries are unavailable"), { statusCode: 501 });
+        }
+        const encodedId = url.pathname.slice("/api/observability/webhooks/".length, -"/retry".length);
+        const id = decodeURIComponent(encodedId);
+        if (!id || id.includes("/")) {
+          throw Object.assign(new Error("Webhook job id is invalid"), { statusCode: 400 });
+        }
+        const result = await retryWebhookJob(id);
+        events.add({ kind: "webhook", message: `Webhook retry requested: ${id}` });
+        sendJson(response, 200, result);
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { error: error.message });
+      }
+    } else if (request.method === "PUT" && url.pathname === "/api/observability/webhook") {
+      let submittedSecret = "";
+      try {
+        if (typeof updateWebhookConfig !== "function") {
+          throw Object.assign(new Error("Webhook configuration is unavailable"), { statusCode: 501 });
+        }
+        const body = await readJsonBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          throw Object.assign(new Error("Webhook configuration must be an object"), { statusCode: 400 });
+        }
+        const enabled = body.enabled === true;
+        const webhookUrl = String(body.url || "").trim();
+        submittedSecret = typeof body.secret === "string" ? body.secret : "";
+        if (enabled && new URL(webhookUrl).protocol !== "https:") {
+          throw Object.assign(new Error("Webhook endpoint must use HTTPS"), { statusCode: 400 });
+        }
+        if (!submittedSecret) {
+          throw Object.assign(new Error("Webhook secret must be a non-empty string"), { statusCode: 400 });
+        }
+        const result = await updateWebhookConfig({ enabled, url: webhookUrl, secret: submittedSecret });
+        events.add({ kind: "config", message: "Webhook configuration updated" });
+        sendJson(response, 200, publicWebhook(result));
+      } catch (error) {
+        const statusCode = error instanceof TypeError ? 400 : (error.statusCode || 400);
+        sendJson(response, statusCode, { error: redactSecret(error.message, submittedSecret) });
+      }
     } else if (request.method === "DELETE" && url.pathname === "/api/proxy/cache") {
       try {
         if (typeof clearProxyCache !== "function") {
@@ -325,10 +534,15 @@ function createAdminService({
 
 module.exports = {
   COOKIE_NAME,
+  BACKUP_FILE_PATTERN,
   DIAGNOSTIC_TYPES,
+  METRIC_WINDOWS,
+  WEBHOOK_STATES,
   createAdminService,
   parseCookies,
+  backupFileName,
   publicConfig,
+  publicWebhook,
   readJsonBody,
   sessionCookie,
 };
