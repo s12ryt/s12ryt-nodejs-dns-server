@@ -55,6 +55,42 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   const output = [];
   let adminOptions;
   let proxyOptions;
+  let metricsOptions;
+  const configVersions = [];
+  const metricQueries = [];
+  const webhookQueries = [];
+  const webhookConfigurations = [];
+  const webhookRetries = [];
+  const telemetryWebhooks = [];
+  const backupCalls = [];
+  const sqliteStore = {
+    open() { lifecycle.push("start:sqlite"); return { open: true, schemaVersion: 1, journalMode: "wal", integrity: "ok" }; },
+    close() { lifecycle.push("close:sqlite"); },
+    status() { return { open: true, schemaVersion: 1, journalMode: "wal", integrity: "ok" }; },
+    recordConfigVersion(value, context) { configVersions.push({ value, context }); },
+    recordMetricSamples() {},
+    queryMetricTotals(range) { metricQueries.push(range); return [{ metric: "dns_queries_total", value: 4 }]; },
+    enqueueWebhook(job) { return job; },
+    listDueWebhooks() { return []; },
+    listWebhooks(query) { webhookQueries.push(query); return [{ id: "dead-job", state: query.state }]; },
+    updateWebhook(id, patch) { webhookRetries.push({ id, patch }); return { id, ...patch }; },
+  };
+  const metrics = {
+    observe() {},
+    drainSamples() { return []; },
+    toPrometheus() { return "s12_test_total 1\n"; },
+    snapshot() { return { counters: { dnsQueries: 1 } }; },
+  };
+  const logger = {
+    async write() {},
+    async close() { lifecycle.push("close:logger"); },
+  };
+  const telemetry = {
+    record(event) { return event; },
+    setWebhook(value) { telemetryWebhooks.push(value); },
+    start() { lifecycle.push("start:telemetry"); },
+    async close() { lifecycle.push("close:telemetry"); },
+  };
   const proxyCache = {
     async start() { lifecycle.push("start:proxy-cache"); },
     async close() { lifecycle.push("close:proxy-cache"); },
@@ -65,6 +101,13 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     status: () => ({ available: false, state: "stopped", logs: [] }),
     start: async () => { throw new Error("must not start without a token"); },
     stop: async () => { lifecycle.push("close:tunnel"); },
+  };
+  const backupManager = {
+    async list() { backupCalls.push(["list"]); return [{ fileName: "s12-manual-20260811T030000Z.zip" }]; },
+    async create(options) { backupCalls.push(["create", options]); return options; },
+    async delete(fileName) { backupCalls.push(["delete", fileName]); return { deleted: true }; },
+    async restore(filePath, options) { backupCalls.push(["restore", filePath, options]); return options; },
+    async prune() {},
   };
   const runtime = createRuntime({
     directory,
@@ -81,26 +124,108 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
         adminOptions = options;
         return fakeService("admin", lifecycle);
       },
+      metrics: (options) => {
+        metricsOptions = options;
+        return fakeService("metrics", lifecycle);
+      },
     },
     proxyCacheFactory: () => proxyCache,
+    sqliteStoreFactory: () => sqliteStore,
+    metricsRegistryFactory: () => metrics,
+    structuredLoggerFactory: () => logger,
+    webhookDispatcherFactory: (options) => {
+      webhookConfigurations.push(options);
+      return {
+        endpoint: options.endpoint,
+        retry(id) { webhookRetries.push({ id, dispatcher: true }); return { id, state: "pending" }; },
+      };
+    },
+    telemetryPipelineFactory: () => telemetry,
+    backupManagerFactory: (options) => {
+      assert.equal(options.storage, sqliteStore);
+      assert.equal(options.directory, directory);
+      return backupManager;
+    },
+    backupSchedulerFactory: ({ manager }) => {
+      assert.equal(manager, backupManager);
+      return {
+        start() { lifecycle.push("start:backup-scheduler"); },
+        close() { lifecycle.push("close:backup-scheduler"); },
+      };
+    },
+    healthMonitorFactory: () => ({
+      start() {},
+      close() { lifecycle.push("close:health"); },
+    }),
   });
 
   await runtime.start();
-  assert.deepEqual(lifecycle, ["start:proxy-cache", "start:dns", "start:doh", "start:proxy", "start:admin"]);
+  assert.deepEqual(lifecycle, [
+    "start:sqlite",
+    "start:proxy-cache",
+    "start:dns",
+    "start:doh",
+    "start:proxy",
+    "start:admin",
+    "start:metrics",
+    "start:telemetry",
+    "start:backup-scheduler",
+  ]);
   assert.match(output.join("\n"), /setup token/i);
   assert.equal(runtime.status().services.dns.port, 1000);
   assert.deepEqual(runtime.status().proxyCache, { entries: 3, bytes: 2048, maxBytes: 4096 });
+  assert.deepEqual(runtime.status().storage, { open: true, schemaVersion: 1, journalMode: "wal", integrity: "ok" });
+  assert.equal(runtime.status().services.metrics.port, 1000);
+  assert.deepEqual(runtime.status().observability, { counters: { dnsQueries: 1 } });
+  assert.equal(metricsOptions.registry, metrics);
+  assert.equal(configVersions.length, 1);
+  assert.deepEqual(configVersions[0].context, { source: "startup", actor: "system" });
   assert.equal(proxyOptions.cache, proxyCache);
   assert.deepEqual(proxyOptions.trustedProxyCidrs, ["127.0.0.1/32", "::1/128"]);
   assert.equal(typeof adminOptions.clearProxyCache, "function");
   await adminOptions.clearProxyCache({ site: "app.test" });
   assert.equal(lifecycle.includes("clear:proxy-cache:app.test"), true);
+  assert.deepEqual(await adminOptions.listBackups(), [{ fileName: "s12-manual-20260811T030000Z.zip" }]);
+  await adminOptions.createBackup({ kind: "manual", dryRun: true });
+  await adminOptions.restoreBackup("s12-manual-20260811T030000Z.zip", { dryRun: true });
+  await adminOptions.deleteBackup("s12-manual-20260811T030000Z.zip");
+  assert.deepEqual(backupCalls, [
+    ["list"],
+    ["create", { kind: "manual", dryRun: true }],
+    ["restore", path.join(directory, "backups", "s12-manual-20260811T030000Z.zip"), { dryRun: true }],
+    ["delete", "s12-manual-20260811T030000Z.zip"],
+  ]);
+  assert.equal(typeof adminOptions.getMetricHistory, "function");
+  const history = await adminOptions.getMetricHistory("24h");
+  assert.equal(history[0].value, 4);
+  assert.equal(Date.parse(metricQueries[0].until) - Date.parse(metricQueries[0].since), 24 * 60 * 60 * 1000);
+  assert.deepEqual(await adminOptions.listWebhookJobs({ state: "dead-letter" }), [{ id: "dead-job", state: "dead-letter" }]);
+  assert.deepEqual(webhookQueries, [{ state: "dead-letter" }]);
+  assert.throws(() => adminOptions.retryWebhookJob("dead-job"), /disabled/i);
+
+  const webhookResult = await adminOptions.updateWebhookConfig({
+    enabled: true,
+    url: "https://alerts.example.test/s12",
+    secret: "runtime-secret",
+  });
+  assert.deepEqual(webhookResult, {
+    enabled: true,
+    url: "https://alerts.example.test/s12",
+    secret: "runtime-secret",
+  });
+  assert.equal(runtime.config.get().observability.webhook.secret, "runtime-secret");
+  assert.equal(webhookConfigurations.at(-1).endpoint, "https://alerts.example.test/s12");
+  assert.equal(telemetryWebhooks.at(-1).endpoint, "https://alerts.example.test/s12");
+  assert.equal(adminOptions.retryWebhookJob("new-job").state, "pending");
+  assert.deepEqual(webhookRetries.at(-1), { id: "new-job", dispatcher: true });
 
   const updated = runtime.config.get();
   updated.records = [{ name: "live.test", type: "A", value: "192.0.2.77", ttl: 30 }];
   updated.routes = [{ host: "app.test", dnsName: "live.test", scheme: "http", port: 9000 }];
   updated.domains = [{ name: "test", enabled: true, defaultTtl: 300, note: "runtime" }];
   await runtime.config.update(updated);
+  assert.equal(configVersions.length, 3);
+  assert.deepEqual(configVersions.at(-1).context, { source: "runtime", actor: "system" });
 
   const response = parseMessage(await runtime.components.resolver.resolve(createQuery("live.test", "A", { id: 42 })));
   assert.equal(response.answers[0].address, "192.0.2.77");
@@ -122,7 +247,122 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   assert.equal(runtime.components.routes.resolve("app.test").url.port, "9000");
 
   await runtime.close();
-  assert.deepEqual(lifecycle.slice(-6), ["close:admin", "close:proxy", "close:doh", "close:dns", "close:proxy-cache", "close:tunnel"]);
+  assert.deepEqual(lifecycle.slice(-11), [
+    "close:backup-scheduler",
+    "close:telemetry",
+    "close:health",
+    "close:metrics",
+    "close:admin",
+    "close:proxy",
+    "close:doh",
+    "close:dns",
+    "close:proxy-cache",
+    "close:sqlite",
+    "close:tunnel",
+  ]);
+});
+
+test("runtime maintenance pauses public services and reloads restored state without closing admin", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-maintenance-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const lifecycle = [];
+  let backupOptions;
+  const storage = {
+    open() { lifecycle.push("open:sqlite"); return { open: true, schemaVersion: 2 }; },
+    close() { lifecycle.push("close:sqlite"); },
+    status() { return { open: true, schemaVersion: 2 }; },
+    recordConfigVersion() {},
+    recordMetricSamples() {},
+    backupTo: async () => ({ totalPages: 1, remainingPages: 0 }),
+  };
+  const proxyCache = {
+    async start() { lifecycle.push("start:proxy-cache"); },
+    async close() { lifecycle.push("close:proxy-cache"); },
+    status() { return { entries: 0, bytes: 0, maxBytes: 1 }; },
+  };
+  const runtime = createRuntime({
+    directory,
+    output: () => {},
+    sqliteStoreFactory: () => storage,
+    proxyCacheFactory: () => proxyCache,
+    serviceFactories: Object.fromEntries(
+      ["dns", "doh", "proxy", "admin", "metrics"].map((name) => [name, () => fakeService(name, lifecycle)]),
+    ),
+    telemetryPipelineFactory: () => ({
+      record(event) { return event; },
+      start() { lifecycle.push("start:telemetry"); },
+      async close() { lifecycle.push("close:telemetry"); },
+    }),
+    backupManagerFactory: (options) => {
+      backupOptions = options;
+      return { list: async () => [], create: async () => {}, delete: async () => {}, restore: async () => {}, prune: async () => {} };
+    },
+    backupSchedulerFactory: () => ({
+      start() { lifecycle.push("start:backup-scheduler"); },
+      pause() { lifecycle.push("pause:backup-scheduler"); },
+      close() { lifecycle.push("close:backup-scheduler"); },
+    }),
+    healthMonitorFactory: () => ({
+      start() { lifecycle.push("start:health"); },
+      close() { lifecycle.push("close:health"); },
+    }),
+    tunnel: { status: () => ({ available: false, state: "stopped", logs: [] }), stop: async () => {} },
+  });
+  await runtime.start();
+  lifecycle.length = 0;
+
+  await backupOptions.maintenance.enter();
+  assert.deepEqual(lifecycle, [
+    "pause:backup-scheduler", "close:telemetry", "close:health",
+    "close:metrics", "close:proxy", "close:doh", "close:dns", "close:proxy-cache",
+  ]);
+  assert.equal(lifecycle.includes("close:admin"), false);
+  lifecycle.length = 0;
+
+  await backupOptions.maintenance.reload();
+  await backupOptions.maintenance.exit();
+  assert.deepEqual(lifecycle, [
+    "start:proxy-cache", "start:dns", "start:doh", "start:proxy", "start:metrics",
+    "start:telemetry", "start:health", "start:backup-scheduler",
+  ]);
+  await runtime.close();
+});
+
+test("runtime keeps core configuration live when SQLite history recording fails", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  let records = 0;
+  const sqliteStore = {
+    open: () => ({ open: true }),
+    close() {},
+    status: () => ({ open: true }),
+    recordConfigVersion() {
+      records += 1;
+      if (records > 1) throw new Error("history disk full");
+    },
+    recordMetricSamples() {},
+    backupTo: async () => ({ totalPages: 1, remainingPages: 0 }),
+  };
+  const serviceFactories = Object.fromEntries(
+    ["dns", "doh", "proxy", "admin"].map((name) => [name, () => fakeService(name, [])]),
+  );
+  const runtime = createRuntime({
+    directory,
+    output: () => {},
+    serviceFactories,
+    sqliteStoreFactory: () => sqliteStore,
+    healthMonitorFactory: () => ({ start() {}, close() {} }),
+    tunnel: { status: () => ({ available: false, state: "stopped", logs: [] }), stop: async () => {} },
+  });
+  await runtime.start();
+
+  const next = runtime.config.get();
+  next.records = [{ name: "still-live.test", type: "A", value: "192.0.2.9", ttl: 60 }];
+  await runtime.config.update(next);
+
+  assert.equal(runtime.components.records.find("still-live.test", "A")[0].value, "192.0.2.9");
+  assert.match(runtime.events.list().at(-1).message, /history disk full/);
+  await runtime.close();
 });
 
 test("runtime starts and closes the non-blocking upstream health monitor", async (t) => {

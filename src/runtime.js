@@ -2,6 +2,8 @@
 
 const path = require("node:path");
 
+const { BackupManager } = require("./backup/manager");
+const { BackupScheduler } = require("./backup/scheduler");
 const { AuthManager } = require("./admin/auth-manager");
 const { ConfigStore } = require("./admin/config-store");
 const { applyDomainState } = require("./admin/domains");
@@ -12,11 +14,17 @@ const { RecordStore } = require("./dns/records");
 const { createResolver } = require("./dns/resolver");
 const { createDohUpstream } = require("./dns/upstream-doh");
 const { createUpstreamHealthMonitor } = require("./dns/upstream-health");
+const { MetricsRegistry } = require("./observability/metrics");
+const { StructuredLogger } = require("./observability/structured-logger");
+const { TelemetryPipeline } = require("./observability/telemetry-pipeline");
+const { WebhookDispatcher } = require("./observability/webhook-dispatcher");
 const { createDnsService } = require("./services/dns-server");
 const { createDohService } = require("./services/doh-server");
+const { createMetricsService } = require("./services/metrics-server");
 const { createProxyService } = require("./services/proxy-server");
 const { ProxyCache } = require("./services/proxy-cache");
 const { ProxyRoutes } = require("./services/proxy-routes");
+const { SqliteStore } = require("./storage/sqlite-store");
 const { ensureCloudflared } = require("./tunnel/download");
 const { TunnelManager } = require("./tunnel/manager");
 
@@ -25,7 +33,20 @@ const DEFAULT_FACTORIES = Object.freeze({
   doh: createDohService,
   proxy: createProxyService,
   admin: createAdminService,
+  metrics: createMetricsService,
 });
+
+const DISABLED_LOGGER = Object.freeze({
+  write: async () => {},
+  close: async () => {},
+});
+
+const METRIC_WINDOW_MS = Object.freeze({
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+});
+const APPLICATION_VERSION = require("../package.json").version;
 
 function serviceAddress(service) {
   const address = service?.address?.();
@@ -44,6 +65,14 @@ function createRuntime({
   serviceFactories = {},
   healthMonitorFactory = createUpstreamHealthMonitor,
   proxyCacheFactory = (options) => new ProxyCache(options),
+  sqliteStoreFactory = (options) => new SqliteStore(options),
+  metricsRegistryFactory = (options) => new MetricsRegistry(options),
+  structuredLoggerFactory = (options) => new StructuredLogger(options),
+  webhookDispatcherFactory = (options) => new WebhookDispatcher(options),
+  telemetryPipelineFactory = (options) => new TelemetryPipeline(options),
+  backupManagerFactory = (options) => new BackupManager(options),
+  backupSchedulerFactory = (options) => new BackupScheduler(options),
+  applicationVersion = APPLICATION_VERSION,
 } = {}) {
   const config = new ConfigStore({ directory });
   const auth = new AuthManager({ directory });
@@ -53,6 +82,9 @@ function createRuntime({
   const services = {};
   let unsubscribe = null;
   let started = false;
+  let maintenanceActive = false;
+  let maintenanceRestored = false;
+  let maintenanceTunnelWasActive = false;
   const environmentToken = typeof environment.CLOUDFLARE_TUNNEL_TOKEN === "string"
     ? environment.CLOUDFLARE_TUNNEL_TOKEN : "";
 
@@ -60,6 +92,12 @@ function createRuntime({
     token: "",
     ensureBinary: () => ensureCloudflared({ directory: path.join(directory, "cloudflared") }),
   });
+
+  function recordEvent(event) {
+    if (components.telemetry) return components.telemetry.record(event);
+    events.add(event);
+    return event;
+  }
 
   function tunnelConfiguration(storedToken) {
     if (environmentToken) {
@@ -118,10 +156,10 @@ function createRuntime({
       } catch (restoreError) {
         error.restoreError = restoreError;
         const message = redactTunnelSecrets(restoreError.message, token, previousToken, environmentToken);
-        events.add({ kind: "tunnel-error", message: `Tunnel rollback failed: ${message}` });
+        recordEvent({ kind: "tunnel-error", message: `Tunnel rollback failed: ${message}` });
       }
       const message = redactTunnelSecrets(error.message, token, previousToken, environmentToken);
-      events.add({ kind: "tunnel-error", message: `Tunnel token update failed: ${message}` });
+      recordEvent({ kind: "tunnel-error", message: `Tunnel token update failed: ${message}` });
       throw error;
     }
   }
@@ -135,6 +173,41 @@ function createRuntime({
     return replaceTunnelToken("");
   }
 
+  function getMetricHistory(window) {
+    const duration = METRIC_WINDOW_MS[window];
+    if (!duration) throw new RangeError("Metric history window is invalid");
+    const until = new Date();
+    const since = new Date(until.getTime() - duration);
+    return components.storage.queryMetricTotals({ since: since.toISOString(), until: until.toISOString() });
+  }
+
+  function listWebhookJobs(query) {
+    return components.storage.listWebhooks(query);
+  }
+
+  function retryWebhookJob(id) {
+    if (!components.webhook) throw new Error("Webhook delivery is disabled");
+    return components.webhook.retry(id);
+  }
+
+  async function updateWebhookConfig(value) {
+    const nextWebhook = value.enabled
+      ? webhookDispatcherFactory({
+        storage: components.storage,
+        endpoint: value.url,
+        secret: value.secret,
+      })
+      : null;
+    const current = config.get();
+    const updated = await config.update({
+      ...current,
+      observability: { ...current.observability, webhook: value },
+    });
+    components.webhook = nextWebhook;
+    components.telemetry.setWebhook(nextWebhook);
+    return updated.observability.webhook;
+  }
+
   function status() {
     return {
       services: {
@@ -142,6 +215,7 @@ function createRuntime({
         doh: serviceAddress(services.doh),
         proxy: serviceAddress(services.proxy),
         admin: serviceAddress(services.admin),
+        metrics: serviceAddress(services.metrics),
       },
       upstreams: (components.upstreams || []).map((upstream) => ({
         name: upstream.name,
@@ -149,14 +223,112 @@ function createRuntime({
       })),
       cache: { entries: components.cache?.size || 0 },
       proxyCache: components.proxyCache?.status() || null,
+      storage: components.storage?.status() || null,
+      observability: components.metrics?.snapshot() || null,
+      backup: {
+        scheduled: Boolean(components.backupScheduler),
+        maintenance: maintenanceActive,
+      },
       tunnel: tunnel.status(),
     };
   }
 
   async function closeServices() {
-    for (const name of ["admin", "proxy", "doh", "dns"]) {
+    for (const name of ["metrics", "admin", "proxy", "doh", "dns"]) {
       if (services[name]) await services[name].close().catch(() => {});
     }
+  }
+
+  async function closePublicServices() {
+    for (const name of ["metrics", "proxy", "doh", "dns"]) {
+      if (services[name]) await services[name].close().catch(() => {});
+    }
+  }
+
+  function applyLoadedConfiguration(current) {
+    const effective = applyDomainState(current);
+    components.records.replace(effective.records);
+    components.routes.replace(effective.routes.filter((route) => route.enabled));
+    components.upstreams.splice(0, components.upstreams.length, ...current.upstreams.map(createDohUpstream));
+    components.trustedProxyCidrs.splice(0, components.trustedProxyCidrs.length, ...current.proxy.trustedProxyCidrs);
+  }
+
+  function createTelemetry(current) {
+    components.logger = current.observability.logs.enabled
+      ? structuredLoggerFactory({
+        directory: path.join(directory, "logs"),
+        retentionDays: current.observability.logs.retentionDays,
+      })
+      : DISABLED_LOGGER;
+    components.webhook = current.observability.webhook.enabled
+      ? webhookDispatcherFactory({
+        storage: components.storage,
+        endpoint: current.observability.webhook.url,
+        secret: current.observability.webhook.secret,
+      })
+      : null;
+    components.telemetry = telemetryPipelineFactory({
+      events,
+      metrics: components.metrics,
+      logger: components.logger,
+      webhook: components.webhook,
+      storage: components.storage,
+      sampleIntervalMs: current.observability.metrics.sampleIntervalMs,
+    });
+  }
+
+  function createPublicServices(current) {
+    services.dns = factories.dns({ resolver: components.resolver, ...current.dns });
+    services.doh = factories.doh({ resolver: components.resolver, ...current.doh });
+    services.proxy = factories.proxy({
+      routes: components.routes,
+      cache: components.proxyCache,
+      trustedProxyCidrs: components.trustedProxyCidrs,
+      onEvent: (event) => recordEvent(event),
+      ...current.proxy,
+    });
+    services.metrics = factories.metrics({
+      registry: components.metrics,
+      ...current.observability.metrics,
+    });
+  }
+
+  async function enterMaintenance() {
+    if (maintenanceActive) throw new Error("Runtime is already in maintenance mode");
+    maintenanceActive = true;
+    maintenanceRestored = false;
+    maintenanceTunnelWasActive = tunnelIsActive();
+    components.backupScheduler?.pause();
+    await components.telemetry?.close();
+    components.upstreamHealth?.close();
+    await closePublicServices();
+    await components.proxyCache?.close();
+    if (maintenanceTunnelWasActive) await tunnel.stop();
+  }
+
+  async function reloadAfterRestore() {
+    const current = await config.load();
+    await auth.load();
+    applyLoadedConfiguration(current);
+    configureTunnel(current.tunnel.token);
+    if (typeof components.proxyCache.configure === "function") {
+      await components.proxyCache.configure({ maxBytes: current.proxy.cacheMaxBytes });
+    }
+    createTelemetry(current);
+    createPublicServices(current);
+    await components.proxyCache.start();
+    for (const name of ["dns", "doh", "proxy", "metrics"]) await services[name].start();
+    components.telemetry.start();
+    components.upstreamHealth.start();
+    if (maintenanceTunnelWasActive && tunnel.status().available) await tunnel.start();
+    maintenanceRestored = true;
+  }
+
+  async function exitMaintenance() {
+    if (maintenanceRestored) components.backupScheduler?.start();
+    maintenanceActive = false;
+    maintenanceRestored = false;
+    maintenanceTunnelWasActive = false;
   }
 
   return {
@@ -179,6 +351,7 @@ function createRuntime({
       }
 
       components.records = new RecordStore(effective.records);
+      components.storage = sqliteStoreFactory({ directory });
       components.routes = new ProxyRoutes(effective.routes.filter((route) => route.enabled), { records: components.records });
       components.cache = new DnsCache(current.cache);
       components.proxyCache = proxyCacheFactory({
@@ -186,13 +359,19 @@ function createRuntime({
         maxBytes: current.proxy.cacheMaxBytes,
       });
       components.trustedProxyCidrs = [...current.proxy.trustedProxyCidrs];
+      components.metrics = metricsRegistryFactory({});
+      createTelemetry(current);
+      const observableEvents = {
+        add: (event) => recordEvent(event),
+        list: () => events.list(),
+      };
       components.upstreams = current.upstreams.map(createDohUpstream);
       components.upstreamHealth = healthMonitorFactory({ getUpstreams: () => components.upstreams });
       components.resolver = createResolver({
         records: components.records,
         upstreams: components.upstreams,
         cache: components.cache,
-        onEvent: (event) => events.add(event),
+        onEvent: (event) => recordEvent(event),
       });
 
       unsubscribe = config.subscribe((next) => {
@@ -203,41 +382,73 @@ function createRuntime({
         components.trustedProxyCidrs.splice(0, components.trustedProxyCidrs.length, ...next.proxy.trustedProxyCidrs);
         if (typeof components.proxyCache.configure === "function") {
           void components.proxyCache.configure({ maxBytes: next.proxy.cacheMaxBytes }).catch((error) => {
-            events.add({ kind: "proxy-cache-error", message: error.message });
+            recordEvent({ kind: "proxy-cache-error", message: error.message });
           });
+        }
+        try {
+          components.storage.recordConfigVersion(next, { source: "runtime", actor: "system" });
+        } catch (error) {
+          recordEvent({ kind: "storage-error", message: `Configuration history was not recorded: ${error.message}` });
         }
       });
 
-      services.dns = factories.dns({ resolver: components.resolver, ...current.dns });
-      services.doh = factories.doh({ resolver: components.resolver, ...current.doh });
-      services.proxy = factories.proxy({
-        routes: components.routes,
-        cache: components.proxyCache,
-        trustedProxyCidrs: components.trustedProxyCidrs,
-        onEvent: (event) => events.add(event),
-        ...current.proxy,
+      createPublicServices(current);
+      components.backups = backupManagerFactory({
+        directory,
+        storage: components.storage,
+        applicationVersion,
+        maintenance: {
+          enter: enterMaintenance,
+          reload: reloadAfterRestore,
+          exit: exitMaintenance,
+        },
+      });
+      components.backupScheduler = backupSchedulerFactory({
+        manager: components.backups,
+        onError: (error) => recordEvent({ kind: "backup-error", message: error.message }),
       });
       services.admin = factories.admin({
         auth,
         config,
         tunnel,
-        events,
+        events: observableEvents,
         status,
         diagnoseDns: (name, type) => components.resolver.diagnose(name, type),
         updateTunnelToken,
         clearTunnelToken,
         clearProxyCache: (scope) => components.proxyCache.clear(scope),
+        getMetricHistory,
+        listWebhookJobs,
+        retryWebhookJob,
+        updateWebhookConfig,
+        listBackups: () => components.backups.list(),
+        createBackup: (options) => components.backups.create(options),
+        importBackup: (stream, options) => components.backups.importArchive(stream, options),
+        getBackupDownload: async (fileName) => {
+          const item = (await components.backups.list()).find((backup) => backup.fileName === fileName);
+          if (!item) throw Object.assign(new Error(`Backup not found: ${fileName}`), { statusCode: 404 });
+          return item;
+        },
+        deleteBackup: (fileName) => components.backups.delete(fileName),
+        restoreBackup: (fileName, options) => components.backups.restore(path.join(directory, "backups", fileName), options),
         ...current.admin,
       });
 
       try {
+        components.storage.open();
+        components.storage.recordConfigVersion(current, { source: "startup", actor: "system" });
         await components.proxyCache.start();
-        for (const name of ["dns", "doh", "proxy", "admin"]) await services[name].start();
+        for (const name of ["dns", "doh", "proxy", "admin", "metrics"]) await services[name].start();
+        components.telemetry.start();
+        components.backupScheduler.start();
         started = true;
         components.upstreamHealth.start();
       } catch (error) {
         await closeServices();
+        await components.telemetry?.close().catch(() => {});
+        components.backupScheduler?.close();
         await components.proxyCache?.close().catch(() => {});
+        components.storage?.close();
         unsubscribe?.();
         unsubscribe = null;
         throw error;
@@ -246,18 +457,21 @@ function createRuntime({
       if (tunnel.status().available) {
         try {
           await tunnel.start();
-          events.add({ kind: "tunnel", message: "Tunnel started automatically" });
+          recordEvent({ kind: "tunnel", message: "Tunnel started automatically" });
         } catch (error) {
-          events.add({ kind: "tunnel-error", message: `Automatic Tunnel startup failed: ${error.message}` });
+          recordEvent({ kind: "tunnel-error", message: `Automatic Tunnel startup failed: ${error.message}` });
         }
       }
       return status();
     },
     async close() {
       if (!started) return;
+      components.backupScheduler?.close();
+      await components.telemetry?.close().catch(() => {});
       components.upstreamHealth?.close();
       await closeServices();
       await components.proxyCache?.close().catch(() => {});
+      components.storage?.close();
       await tunnel.stop().catch(() => {});
       unsubscribe?.();
       unsubscribe = null;
@@ -266,4 +480,4 @@ function createRuntime({
   };
 }
 
-module.exports = { createRuntime, serviceAddress };
+module.exports = { APPLICATION_VERSION, METRIC_WINDOW_MS, createRuntime, serviceAddress };
