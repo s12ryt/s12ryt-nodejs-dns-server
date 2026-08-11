@@ -17,6 +17,13 @@ const state = {
   policySubscriptions: [],
   proxyOperations: { health: { sites: [] }, draining: { sites: [] }, websockets: { sites: [] } },
   proxyHealthHistory: [],
+  identity: null,
+  users: [],
+  roles: [],
+  apiTokens: [],
+  auditEntries: [],
+  auditTotal: 0,
+  auditVerification: null,
 };
 const titles = { overview: "系統總覽", records: "DNS 與網域", routes: "代理站台", tunnel: "Cloudflare Tunnel", events: "事件日誌" };
 const serviceNames = { dns: "DNS", doh: "DoH", proxy: "Proxy", admin: "Admin" };
@@ -578,6 +585,163 @@ function renderObservability() {
   animateRows(history);
   animateRows($("#webhook-jobs"));
   renderBackups();
+  renderIdentity();
+  renderAudit();
+}
+
+function hasPermission(permission) {
+  return state.identity?.permissions?.includes(permission) === true;
+}
+
+function renderIdentity() {
+  const panel = $("#identity-panel");
+  const visible = hasPermission("users:read") || hasPermission("roles:read");
+  panel.hidden = !visible;
+  if (!visible) return;
+  $("#identity-current").textContent = `${state.identity.username} · ${state.identity.role}`;
+  $("#identity-summary").textContent = `${state.users.length} 位使用者`;
+  $("#users-list").innerHTML = state.users.length ? state.users.map((user) => `<article class="data-row"><div class="grow"><strong>${escapeHtml(user.displayName)}</strong><small>${escapeHtml(user.username)} · ${escapeHtml(user.role)}</small></div><span class="state-chip ${user.enabled ? "active" : "inactive"}">${user.enabled ? "啟用" : "停用"}</span></article>`).join("") : empty("沒有可顯示的使用者。");
+  $("#roles-list").innerHTML = state.roles.length ? state.roles.map((role) => `<article class="data-row" data-testid="role-${escapeHtml(role.id)}"><div class="grow"><strong>${escapeHtml(role.name)}</strong><small>${escapeHtml(role.id)} · ${escapeHtml(role.permissions.join(", "))}</small></div><span class="state-chip ${role.customRole ? "inactive" : "active"}">${role.customRole ? "自訂" : "固定"}</span></article>`).join("") : empty("沒有可顯示的角色。");
+  $("#tokens-summary").textContent = `${state.apiTokens.length} 組`;
+  $("#tokens-list").innerHTML = state.apiTokens.length ? state.apiTokens.map((token) => `<article class="data-row" data-testid="api-token-${escapeHtml(token.id)}"><div class="grow"><strong>${escapeHtml(token.name)}</strong><small>${escapeHtml(token.scopes.join(", "))}${token.lastUsedAt ? ` · 最近使用 ${escapeHtml(formatTimestamp(token.lastUsedAt))}` : " · 尚未使用"}</small></div><span class="state-chip ${token.revokedAt ? "inactive" : "active"}">${token.revokedAt ? "已撤銷" : "有效"}</span>${token.revokedAt ? "" : `<button class="danger-button" type="button" data-token-revoke="${escapeHtml(token.id)}">撤銷 Token</button>`}</article>`).join("") : empty("尚未建立 API Token。");
+}
+
+async function loadIdentityResources() {
+  if (!state.identity) return;
+  const [users, roles, apiTokens] = await Promise.all([
+    hasPermission("users:read") ? api("/api/users") : [],
+    hasPermission("roles:read") ? api("/api/roles") : [],
+    hasPermission("users:read") ? api("/api/tokens") : [],
+  ]);
+  Object.assign(state, { users, roles, apiTokens });
+}
+
+function renderAudit() {
+  const panel = $("#audit-panel");
+  const visible = hasPermission("audit:read");
+  panel.hidden = !visible;
+  if (!visible) return;
+  $("#audit-summary").textContent = `${state.auditTotal} 筆`;
+  $("#export-audit").hidden = state.identity?.role !== "owner";
+  const verification = state.auditVerification;
+  const status = $("#audit-chain-status");
+  status.className = `audit-chain-status${verification ? verification.valid ? " valid" : " invalid" : ""}`;
+  status.textContent = verification
+    ? verification.valid
+      ? `雜湊鏈完整，共驗證 ${verification.entries} 筆`
+      : `雜湊鏈異常，第一個問題項目：${verification.brokenAt || "未知"}`
+    : "尚未驗證雜湊鏈";
+  $("#audit-entries").innerHTML = state.auditEntries.length ? state.auditEntries.map((entry) => `<article class="data-row audit-row"><div class="grow"><strong>${escapeHtml(entry.action)}</strong><small>${escapeHtml(entry.resource)} · ${escapeHtml(entry.actorType)}:${escapeHtml(entry.actorId)}</small><small>${escapeHtml(entry.sourceIp)} · request ${escapeHtml(entry.requestId)}</small><time datetime="${escapeHtml(entry.createdAt)}">${escapeHtml(formatTimestamp(entry.createdAt))}</time></div><code title="Entry SHA-256">${escapeHtml(entry.entryHash.slice(0, 12))}…</code></article>`).join("") : empty("目前沒有審計紀錄。");
+  animateRows($("#audit-entries"));
+}
+
+async function loadAuditEntries() {
+  if (!hasPermission("audit:read")) {
+    state.auditEntries = [];
+    state.auditTotal = 0;
+    return;
+  }
+  const result = await api("/api/audit?limit=100&offset=0");
+  state.auditEntries = result.items;
+  state.auditTotal = result.total;
+}
+
+function identityLines(value) {
+  return [...new Set(String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function showIssuedSecret(testId, label, secret) {
+  $("#modal-body").innerHTML = `<div class="sensitive-warning" role="note"><strong>只顯示這一次</strong><p>關閉後無法再次取得，請立即存放至安全的密鑰管理工具。</p></div><div class="identity-secret" data-testid="${testId}">${escapeHtml(secret)}</div><div class="modal-actions"><button class="primary" type="button" data-secret-done>完成</button></div>`;
+  $("[data-secret-done]", $("#modal-body")).addEventListener("click", closeModal);
+  $("[data-secret-done]", $("#modal-body")).focus();
+  showToast(`${label}已建立`);
+}
+
+function openRoleModal() {
+  openModal({
+    title: "新增自訂角色",
+    eyebrow: "ROLE POLICY",
+    content: `<form id="identity-role-form" class="modal-form" novalidate><label>角色識別碼<input name="id" autocomplete="off" placeholder="dns-editor"></label><label>角色名稱<input name="name" autocomplete="off" placeholder="DNS Editor"></label><label>權限清單<textarea name="permissions" rows="7" spellcheck="false" placeholder="dns:read\ndns:write"></textarea></label><p class="muted">每行一項已知權限；完整敏感日誌與備份下載權限不可委派。</p><p class="modal-error form-message error" role="alert" hidden></p><div class="modal-actions"><button class="secondary" type="button" data-modal-cancel>取消</button><button class="primary" type="submit">建立角色</button></div></form>`,
+    initialFocus: "[name='id']",
+  });
+  const form = $("#identity-role-form");
+  $("[data-modal-cancel]", form).addEventListener("click", closeModal);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.submitter;
+    const id = form.elements.id.value.trim().toLowerCase();
+    const name = form.elements.name.value.trim();
+    const permissions = identityLines(form.elements.permissions.value);
+    if (!/^[a-z][a-z0-9-]{1,63}$/.test(id)) return modalError("角色識別碼須為 2 至 64 個小寫英數字或連字號");
+    if (!name || name.length > 100) return modalError("請輸入 1 至 100 字元的角色名稱");
+    if (!permissions.length) return modalError("請至少輸入一項權限");
+    setBusy(button, true, "建立中…");
+    try {
+      await api("/api/roles", { method: "POST", body: { id, name, permissions } });
+      state.roles = await api("/api/roles");
+      closeModal();
+      renderIdentity();
+      showToast("自訂角色已建立");
+    } catch (error) { modalError(error.message); setBusy(button, false); }
+  });
+}
+
+function identityRoleOptions() {
+  return state.roles.map((role) => `<option value="${escapeHtml(role.id)}">${escapeHtml(role.name)} (${escapeHtml(role.id)})</option>`).join("");
+}
+
+function openInvitationModal() {
+  openModal({
+    title: "邀請使用者",
+    eyebrow: "USER INVITATION",
+    content: `<form id="identity-invitation-form" class="modal-form" novalidate><label>使用者名稱<input name="username" autocomplete="off" autocapitalize="none"></label><label>角色<select name="role">${identityRoleOptions()}</select></label><label>有效期限<select name="ttlMs"><option value="86400000">24 小時</option><option value="604800000">7 天</option><option value="3600000">1 小時</option></select></label><p class="modal-error form-message error" role="alert" hidden></p><div class="modal-actions"><button class="secondary" type="button" data-modal-cancel>取消</button><button class="primary" type="submit">建立邀請</button></div></form>`,
+    initialFocus: "[name='username']",
+  });
+  const form = $("#identity-invitation-form");
+  $("[data-modal-cancel]", form).addEventListener("click", closeModal);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.submitter;
+    const username = form.elements.username.value.trim().toLowerCase();
+    const role = form.elements.role.value;
+    const ttlMs = Number(form.elements.ttlMs.value);
+    if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(username)) return modalError("使用者名稱須為 2 至 64 個小寫英數字、句點、底線或連字號");
+    if (!role) return modalError("請選擇角色");
+    setBusy(button, true, "建立中…");
+    try {
+      const invitation = await api("/api/users/invitations", { method: "POST", body: { username, role, ttlMs } });
+      showIssuedSecret("issued-invitation-token", "邀請", invitation.token);
+    } catch (error) { modalError(error.message); setBusy(button, false); }
+  });
+}
+
+function openApiTokenModal() {
+  openModal({
+    title: "建立 API Token",
+    eyebrow: "SCOPED CREDENTIAL",
+    content: `<form id="identity-token-form" class="modal-form" novalidate><label>Token 名稱<input name="name" autocomplete="off" maxlength="100"></label><label>Scopes<textarea name="scopes" rows="7" spellcheck="false" placeholder="dns:read\ndns:write"></textarea></label><label>到期時間（選填）<input name="expiresAt" type="datetime-local"></label><p class="modal-error form-message error" role="alert" hidden></p><div class="modal-actions"><button class="secondary" type="button" data-modal-cancel>取消</button><button class="primary" type="submit">建立 Token</button></div></form>`,
+    initialFocus: "[name='name']",
+  });
+  const form = $("#identity-token-form");
+  $("[data-modal-cancel]", form).addEventListener("click", closeModal);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.submitter;
+    const name = form.elements.name.value.trim();
+    const scopes = identityLines(form.elements.scopes.value);
+    const expiresValue = form.elements.expiresAt.value;
+    const expiresAt = expiresValue ? new Date(expiresValue).toISOString() : null;
+    if (!name || name.length > 100) return modalError("請輸入 1 至 100 字元的 Token 名稱");
+    if (!scopes.length) return modalError("請至少輸入一項 Scope");
+    if (expiresAt && Date.parse(expiresAt) <= Date.now()) return modalError("到期時間必須晚於現在");
+    setBusy(button, true, "建立中…");
+    try {
+      const token = await api("/api/tokens", { method: "POST", body: { name, scopes, expiresAt } });
+      state.apiTokens = await api("/api/tokens");
+      renderIdentity();
+      showIssuedSecret("issued-api-token", "API Token", token.token);
+    } catch (error) { modalError(error.message); setBusy(button, false); }
+  });
 }
 
 async function loadMetricHistory(window = state.metricWindow) {
@@ -620,6 +784,9 @@ function renderAll() {
 }
 
 async function loadApplication() {
+  const session = await api("/api/session");
+  state.csrf = session.csrf;
+  state.identity = session.identity;
   const [config, status, tunnel, events, metricHistory, webhookJobs, backups, policySubscriptions, proxyOperations, proxyHealthHistory] = await Promise.all([
     api("/api/config"),
     api("/api/status"),
@@ -633,6 +800,8 @@ async function loadApplication() {
     api("/api/proxy/health-history?window=24h"),
   ]);
   Object.assign(state, { config: { domains: [], ...config }, status, tunnel, events, selectedDomain: null, metricWindow: "24h", metricHistory, webhookJobs, backups, backupPreview: null, policySubscriptions, proxyOperations, proxyHealthHistory });
+  await loadIdentityResources();
+  await loadAuditEntries();
   renderAll();
   setView("overview", { focus: false });
   $("#loading").hidden = true;
@@ -1629,6 +1798,58 @@ $("#webhook-jobs").addEventListener("click", async (event) => {
     renderObservability();
     showToast("Webhook 已重新排程");
   } catch (error) { showToast(error.message, true); }
+});
+
+$("#add-role").addEventListener("click", openRoleModal);
+$("#invite-user").addEventListener("click", openInvitationModal);
+$("#create-api-token").addEventListener("click", openApiTokenModal);
+$("#tokens-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-token-revoke]");
+  if (!button) return;
+  const token = state.apiTokens.find((candidate) => candidate.id === button.dataset.tokenRevoke);
+  if (!token) return;
+  openConfirm({
+    title: "撤銷 API Token",
+    description: `<p>確定撤銷 <strong>${escapeHtml(token.name)}</strong>？所有使用此 Token 的後續請求都會立即失效。</p>`,
+    confirmLabel: "確認撤銷",
+    onConfirm: async () => {
+      await api(`/api/tokens/${encodeURIComponent(token.id)}`, { method: "DELETE" });
+      state.apiTokens = await api("/api/tokens");
+      renderIdentity();
+      showToast("API Token 已撤銷");
+    },
+  });
+});
+
+$("#refresh-audit").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "更新中…");
+  try {
+    await loadAuditEntries();
+    renderAudit();
+    showToast("審計紀錄已更新");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+$("#verify-audit").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  setBusy(button, true, "驗證中…");
+  try {
+    state.auditVerification = await api("/api/audit/verify");
+    renderAudit();
+    showToast(state.auditVerification.valid ? "審計鏈驗證通過" : "審計鏈驗證失敗", !state.auditVerification.valid);
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(button, false); }
+});
+
+$("#export-audit").addEventListener("click", () => {
+  const anchor = document.createElement("a");
+  anchor.href = "/api/audit/export";
+  anchor.download = "";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
 });
 
 $("#refresh-backups").addEventListener("click", async (event) => {

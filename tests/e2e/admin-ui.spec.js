@@ -179,6 +179,68 @@ test.describe.serial("管理介面", () => {
     await expect(deadJob).toContainText("pending");
   });
 
+  test("Owner 可管理角色、邀請與 scoped API token", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "事件日誌" }).click();
+    await expect(page.getByRole("heading", { name: "身分與存取" })).toBeVisible();
+    await expect(page.getByTestId("identity-current")).toContainText("admin");
+    await expect(page.getByTestId("identity-current")).toContainText("owner");
+
+    await page.getByRole("button", { name: "新增角色" }).click();
+    const roleModal = page.getByRole("dialog", { name: "新增自訂角色" });
+    await roleModal.getByLabel("角色識別碼").fill("ui-dns-editor");
+    await roleModal.getByLabel("角色名稱").fill("UI DNS editor");
+    await roleModal.getByLabel("權限清單").fill("dns:read\ndns:write");
+    await roleModal.getByRole("button", { name: "建立角色" }).click();
+    await expect(page.getByTestId("role-ui-dns-editor")).toContainText("dns:write");
+
+    await page.getByRole("button", { name: "邀請使用者" }).click();
+    const invitationModal = page.getByRole("dialog", { name: "邀請使用者" });
+    await invitationModal.getByLabel("使用者名稱").fill("ui-editor");
+    await invitationModal.getByLabel("角色").selectOption("ui-dns-editor");
+    await invitationModal.getByRole("button", { name: "建立邀請" }).click();
+    const invitationSecret = page.getByTestId("issued-invitation-token");
+    await expect(invitationSecret).toContainText("s12_inv_");
+    const invitationToken = await invitationSecret.textContent();
+    await page.getByRole("button", { name: "完成" }).click();
+    await expect(page.locator("body")).not.toContainText(invitationToken.trim());
+
+    await page.getByRole("button", { name: "建立 API Token" }).click();
+    const tokenModal = page.getByRole("dialog", { name: "建立 API Token" });
+    await tokenModal.getByLabel("Token 名稱").fill("UI automation");
+    await tokenModal.getByLabel("Scopes").fill("dns:read\ndns:write");
+    await tokenModal.getByRole("button", { name: "建立 Token" }).click();
+    const tokenSecret = page.getByTestId("issued-api-token");
+    await expect(tokenSecret).toContainText("s12_api_");
+    const rawToken = await tokenSecret.textContent();
+    await page.getByRole("button", { name: "完成" }).click();
+    const tokenRow = page.getByTestId(/api-token-/).filter({ hasText: "UI automation" });
+    await expect(tokenRow).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(rawToken.trim());
+    await tokenRow.getByRole("button", { name: "撤銷 Token" }).click();
+    await page.getByRole("dialog", { name: "撤銷 API Token" }).getByRole("button", { name: "確認撤銷" }).click();
+    await expect(tokenRow).toContainText("已撤銷");
+  });
+
+  test("Owner 可檢視、驗證並匯出防竄改審計紀錄", async ({ page }) => {
+    await login(page);
+    await page.getByRole("button", { name: "事件日誌" }).click();
+    await expect(page.getByRole("heading", { name: "審計紀錄" })).toBeVisible();
+    await expect(page.getByTestId("audit-entries")).toContainText("role.create");
+    await expect(page.getByTestId("audit-entries")).toContainText("role:ui-dns-editor");
+
+    await page.getByRole("button", { name: "驗證審計鏈" }).click();
+    await expect(page.getByTestId("audit-chain-status")).toContainText("雜湊鏈完整");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "匯出審計紀錄" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^s12-audit-\d{8}T\d{6}Z\.ndjson$/);
+    const exported = path.join(directory, "audit-export.ndjson");
+    await download.saveAs(exported);
+    expect(await fs.readFile(exported, "utf8")).toContain('"action":"role.create"');
+  });
+
   test("可觀測性頁可預覽、建立、匯入、驗證及刪除敏感備份", async ({ page }) => {
     await login(page);
     await page.getByRole("button", { name: "事件日誌" }).click();
@@ -192,11 +254,14 @@ test.describe.serial("管理介面", () => {
     const previewResponse = await previewResponsePromise;
     expect(previewResponse.status()).toBe(200);
     await expect(page.getByTestId("backup-preview")).toContainText("config.json");
-    await expect(page.getByTestId("backup-preview")).toContainText("admin.json");
     await expect(page.getByTestId("backup-preview")).toContainText("operations.sqlite");
     await expect(page.getByTestId("backup-preview")).not.toContainText("proxy-cache");
 
+    const createResponsePromise = page.waitForResponse((response) => response.url().endsWith("/api/backups")
+      && response.request().method() === "POST" && response.status() !== 200);
     await page.getByRole("button", { name: "建立備份" }).click();
+    const createResponse = await createResponsePromise;
+    expect(createResponse.status(), await createResponse.text()).toBe(201);
     const manualBackup = page.locator("[data-backup-file^='s12-manual-']").first();
     await expect(manualBackup).toBeVisible();
     const manualFileName = await manualBackup.getAttribute("data-backup-file");

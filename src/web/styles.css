@@ -239,8 +239,16 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
 .review-box code { color: var(--primary); }
 .icon-button { display: grid; width: 36px; min-height: 36px; place-items: center; padding: 0; color: var(--muted); background: transparent; border-color: transparent; }
 .observability-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr); gap: 1rem; }
-.metric-history-panel, .webhook-jobs-panel, .backups-panel, .memory-events-panel { min-width: 0; }
-.webhook-jobs-panel, .backups-panel, .memory-events-panel { grid-column: 1 / -1; }
+.metric-history-panel, .webhook-jobs-panel, .identity-panel, .audit-panel, .backups-panel, .memory-events-panel { min-width: 0; }
+.webhook-jobs-panel, .identity-panel, .audit-panel, .backups-panel, .memory-events-panel { grid-column: 1 / -1; }
+.identity-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.identity-grid h4, .identity-panel > section h4 { margin: 0 0 0.65rem; }
+.identity-secret { overflow-wrap: anywhere; padding: 0.8rem; border: 1px solid var(--warning); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); }
+.audit-chain-status { margin-bottom: 0.85rem; padding: 0.7rem 0.8rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; }
+.audit-chain-status.valid { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.audit-chain-status.invalid { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.audit-row code { flex: 0 0 auto; color: var(--muted); font-size: 0.75rem; }
+.audit-row time { display: block; color: var(--muted); font-size: 0.75rem; }
 .segmented-control { display: inline-grid; grid-template-columns: repeat(3, auto); padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; }
 .segmented-control button { min-height: 34px; padding: 0.35rem 0.65rem; color: var(--muted); background: transparent; border: 0; }
 .segmented-control button[aria-pressed="true"] { color: var(--text); background: var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
@@ -279,7 +287,8 @@ button { min-height: 40px; padding: 0.55rem 0.85rem; border: 1px solid transpare
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-grid, .tunnel-layout { grid-template-columns: 1fr; }
   .observability-grid { grid-template-columns: 1fr; }
-  .webhook-jobs-panel, .backups-panel, .memory-events-panel { grid-column: auto; }
+.webhook-jobs-panel, .identity-panel, .audit-panel, .backups-panel, .memory-events-panel { grid-column: auto; }
+.identity-grid { grid-template-columns: 1fr; }
   .dns-master-detail { grid-template-columns: 1fr; }
   .policy-grid { grid-template-columns: 1fr; }
   .domain-master { position: static; }

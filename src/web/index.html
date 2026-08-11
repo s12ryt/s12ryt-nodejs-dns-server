@@ -121,6 +121,16 @@
             <div class="section-heading"><div><p class="eyebrow">DELIVERY QUEUE</p><div class="title-row"><h3 id="webhook-jobs-title">Webhook 傳送</h3><span id="webhook-jobs-summary" class="count-badge">0 筆</span></div></div><button id="refresh-webhooks" class="secondary" type="button">重新整理</button></div>
             <div id="webhook-jobs" class="data-list"></div>
           </section>
+          <section id="identity-panel" class="panel identity-panel" aria-labelledby="identity-title" hidden>
+            <div class="section-heading"><div><p class="eyebrow">ACCESS CONTROL</p><div class="title-row"><h3 id="identity-title">身分與存取</h3><span id="identity-summary" class="count-badge">0 位使用者</span></div><p id="identity-current" class="muted" data-testid="identity-current"></p></div><div class="button-row"><button id="add-role" class="secondary" type="button">新增角色</button><button id="invite-user" class="secondary" type="button">邀請使用者</button><button id="create-api-token" class="primary" type="button">建立 API Token</button></div></div>
+            <div class="identity-grid"><section aria-labelledby="users-title"><h4 id="users-title">使用者</h4><div id="users-list" class="data-list"></div></section><section aria-labelledby="roles-title"><h4 id="roles-title">角色</h4><div id="roles-list" class="data-list"></div></section></div>
+            <section aria-labelledby="tokens-title"><div class="title-row"><h4 id="tokens-title">API Tokens</h4><span id="tokens-summary" class="count-badge">0 組</span></div><div id="tokens-list" class="data-list"></div></section>
+          </section>
+          <section id="audit-panel" class="panel audit-panel" aria-labelledby="audit-title" hidden>
+            <div class="section-heading"><div><p class="eyebrow">TAMPER EVIDENCE</p><div class="title-row"><h3 id="audit-title">審計紀錄</h3><span id="audit-summary" class="count-badge">0 筆</span></div><p class="muted">保存操作者、資源、來源位址與變更摘要，並以 SHA-256 雜湊鏈偵測竄改。</p></div><div class="button-row"><button id="verify-audit" class="secondary" type="button">驗證審計鏈</button><button id="export-audit" class="secondary" type="button">匯出審計紀錄</button><button id="refresh-audit" class="secondary" type="button">重新整理</button></div></div>
+            <div id="audit-chain-status" class="audit-chain-status" data-testid="audit-chain-status" role="status">尚未驗證雜湊鏈</div>
+            <div id="audit-entries" class="data-list" data-testid="audit-entries"></div>
+          </section>
           <section class="panel backups-panel" aria-labelledby="backups-title">
             <div class="section-heading"><div><p class="eyebrow">DISASTER RECOVERY</p><div class="title-row"><h3 id="backups-title">備份與還原</h3><span id="backups-summary" class="count-badge">0 份</span></div></div><button id="refresh-backups" class="secondary" type="button">重新整理</button></div>
             <div class="sensitive-warning" data-testid="backup-sensitive-warning" role="note"><strong>最高敏感資料</strong><p>備份以明文包含管理密碼雜湊、Tunnel Token、設定、SQLite 與完整操作資料。下載後必須以最高權限保護。</p></div>
