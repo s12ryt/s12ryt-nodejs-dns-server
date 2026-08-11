@@ -133,12 +133,14 @@ class AuthManager {
     this.#sessions.delete(String(id));
   }
 
-  async login(source, password) {
+  async login(source, usernameOrPassword, password) {
+    const username = password === undefined ? "admin" : String(usernameOrPassword);
+    const candidatePassword = password === undefined ? usernameOrPassword : password;
     const key = String(source || "unknown");
     const now = this.now();
     const previous = (this.#failures.get(key) || []).filter((time) => now - time < this.loginWindowMs);
     if (previous.length >= this.maxLoginFailures) throw new Error("Too many login attempts");
-    if (!(await this.verifyPassword(password))) {
+    if (username !== "admin" || !(await this.verifyPassword(candidatePassword))) {
       previous.push(now);
       this.#failures.set(key, previous);
       throw new Error("Invalid credentials");
