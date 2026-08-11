@@ -167,6 +167,13 @@ npm run lint
 npm run build
 ```
 
+## 完整手冊
+
+- [維運、復原與診斷](docs/operations.md)
+- [REST API v2、認證與冪等寫入](docs/api.md)
+- [Docker Compose、systemd、升級與回滾](docs/deployment.md)
+- [效能與24小時正式驗收](docs/benchmark.md)
+
 `npm run build` 產生：
 
 - `dist/index.js`：標準庫單檔 bootstrap。
