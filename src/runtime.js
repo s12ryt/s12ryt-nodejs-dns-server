@@ -4,10 +4,12 @@ const path = require("node:path");
 
 const { BackupManager } = require("./backup/manager");
 const { BackupScheduler } = require("./backup/scheduler");
-const { AuthManager } = require("./admin/auth-manager");
 const { ConfigStore } = require("./admin/config-store");
+const { AuditService } = require("./admin/audit-service");
 const { applyDomainState } = require("./admin/domains");
 const { EventLog } = require("./admin/event-log");
+const { IdentityManager } = require("./admin/identity-manager");
+const { IdempotencyService } = require("./admin/idempotency-service");
 const { createAdminService } = require("./admin/server");
 const { DnsCache } = require("./dns/cache");
 const { PolicyStore } = require("./dns/policy");
@@ -80,10 +82,13 @@ function createRuntime({
   backupManagerFactory = (options) => new BackupManager(options),
   backupSchedulerFactory = (options) => new BackupScheduler(options),
   proxyHealthMonitorFactory = (options) => new ProxyHealthMonitor(options),
+  identityManagerFactory = (options) => new IdentityManager(options),
+  auditServiceFactory = (options) => new AuditService(options),
+  idempotencyServiceFactory = (options) => new IdempotencyService(options),
   applicationVersion = APPLICATION_VERSION,
 } = {}) {
   const config = new ConfigStore({ directory });
-  const auth = new AuthManager({ directory });
+  let auth = null;
   const events = new EventLog(500);
   const factories = { ...DEFAULT_FACTORIES, ...serviceFactories };
   const components = {};
@@ -358,7 +363,7 @@ function createRuntime({
 
   return {
     config,
-    auth,
+    get auth() { return auth; },
     events,
     components,
     status,
@@ -369,6 +374,11 @@ function createRuntime({
       const current = await config.load();
       const effective = applyDomainState(current);
       configureTunnel(current.tunnel.token);
+      components.storage = sqliteStoreFactory({ directory });
+      components.storage.open();
+      components.audit = auditServiceFactory({ storage: components.storage });
+      components.idempotency = idempotencyServiceFactory({ storage: components.storage });
+      auth = identityManagerFactory({ directory, storage: components.storage });
       await auth.load();
       if (!auth.isConfigured()) {
         const token = auth.createSetupToken();
@@ -385,7 +395,6 @@ function createRuntime({
         subscriptions: current.dnsPolicy.subscriptions,
         onEvent: (event) => recordEvent(event),
       });
-      components.storage = sqliteStoreFactory({ directory });
       components.routes = new ProxyRoutes(effective.routes.filter((route) => route.enabled), { records: components.records });
       components.proxyHealth = proxyHealthMonitorFactory({
         routes: components.routes,
@@ -454,6 +463,8 @@ function createRuntime({
       });
       services.admin = factories.admin({
         auth,
+        audit: components.audit,
+        idempotency: components.idempotency,
         config,
         tunnel,
         events: observableEvents,
@@ -497,7 +508,6 @@ function createRuntime({
       });
 
       try {
-        components.storage.open();
         components.storage.recordConfigVersion(current, { source: "startup", actor: "system" });
         await components.proxyCache.start();
         await components.policySubscriptions.start();

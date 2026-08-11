@@ -48,6 +48,14 @@ function configurableTunnel() {
   };
 }
 
+function fakeIdentityManager(lifecycle = null) {
+  return {
+    async load() { lifecycle?.push("load:identity"); return false; },
+    isConfigured() { return false; },
+    createSetupToken() { return "setup-token"; },
+  };
+}
+
 test("runtime shares live DNS and proxy state and closes services in reverse order", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-runtime-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -69,6 +77,8 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   const proxyHealthHistoryQueries = [];
   let policySubscriptionOptions;
   let proxyHealthOptions;
+  let auditOptions;
+  let idempotencyOptions;
   const backupCalls = [];
   const sqliteStore = {
     open() { lifecycle.push("start:sqlite"); return { open: true, schemaVersion: 1, journalMode: "wal", integrity: "ok" }; },
@@ -83,6 +93,9 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     listDueWebhooks() { return []; },
     listWebhooks(query) { webhookQueries.push(query); return [{ id: "dead-job", state: query.state }]; },
     updateWebhook(id, patch) { webhookRetries.push({ id, patch }); return { id, ...patch }; },
+    reserveIdempotency() { return { state: "started" }; },
+    completeIdempotency() {},
+    abandonIdempotency() {},
   };
   const metrics = {
     observe() {},
@@ -150,6 +163,15 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
     },
     proxyCacheFactory: () => proxyCache,
     sqliteStoreFactory: () => sqliteStore,
+    identityManagerFactory: () => fakeIdentityManager(lifecycle),
+    auditServiceFactory: (options) => {
+      auditOptions = options;
+      return { record() {}, list: () => ({ items: [], total: 0 }), verify: () => ({ valid: true }), exportNdjson: () => ({}) };
+    },
+    idempotencyServiceFactory: (options) => {
+      idempotencyOptions = options;
+      return { execute() {} };
+    },
     metricsRegistryFactory: () => metrics,
     structuredLoggerFactory: () => logger,
     webhookDispatcherFactory: (options) => {
@@ -226,6 +248,7 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   await runtime.start();
   assert.deepEqual(lifecycle, [
     "start:sqlite",
+    "load:identity",
     "start:proxy-cache",
     "start:policy-subscriptions",
     "start:dns",
@@ -245,6 +268,10 @@ test("runtime shares live DNS and proxy state and closes services in reverse ord
   assert.deepEqual(runtime.status().observability, { counters: { dnsQueries: 1 } });
   assert.deepEqual(runtime.status().proxyHealth, { running: true, targets: 2 });
   assert.equal(metricsOptions.registry, metrics);
+  assert.equal(auditOptions.storage, sqliteStore);
+  assert.equal(typeof adminOptions.audit.record, "function");
+  assert.equal(idempotencyOptions.storage, sqliteStore);
+  assert.equal(typeof adminOptions.idempotency.execute, "function");
   assert.equal(configVersions.length, 1);
   assert.deepEqual(configVersions[0].context, { source: "startup", actor: "system" });
   assert.equal(proxyOptions.cache, proxyCache);
@@ -402,6 +429,12 @@ test("runtime maintenance pauses public services and reloads restored state with
     status() { return { open: true, schemaVersion: 2 }; },
     recordConfigVersion() {},
     recordMetricSamples() {},
+    appendAuditEntry(entry) { return entry; },
+    listAuditEntries() { return { items: [], total: 0, limit: 100, offset: 0 }; },
+    verifyAuditChain() { return { valid: true, entries: 0, brokenAt: null }; },
+    reserveIdempotency() { return { state: "started" }; },
+    completeIdempotency() {},
+    abandonIdempotency() {},
     backupTo: async () => ({ totalPages: 1, remainingPages: 0 }),
   };
   const proxyCache = {
@@ -413,6 +446,7 @@ test("runtime maintenance pauses public services and reloads restored state with
     directory,
     output: () => {},
     sqliteStoreFactory: () => storage,
+    identityManagerFactory: () => fakeIdentityManager(),
     proxyCacheFactory: () => proxyCache,
     serviceFactories: Object.fromEntries(
       ["dns", "doh", "proxy", "admin", "metrics"].map((name) => [name, () => fakeService(name, lifecycle)]),
@@ -478,6 +512,12 @@ test("runtime keeps core configuration live when SQLite history recording fails"
     },
     recordMetricSamples() {},
     recordProxyHealthEvent() { throw new Error("proxy health history disk full"); },
+    appendAuditEntry(entry) { return entry; },
+    listAuditEntries() { return { items: [], total: 0, limit: 100, offset: 0 }; },
+    verifyAuditChain() { return { valid: true, entries: 0, brokenAt: null }; },
+    reserveIdempotency() { return { state: "started" }; },
+    completeIdempotency() {},
+    abandonIdempotency() {},
     backupTo: async () => ({ totalPages: 1, remainingPages: 0 }),
   };
   const serviceFactories = Object.fromEntries(
@@ -488,6 +528,7 @@ test("runtime keeps core configuration live when SQLite history recording fails"
     output: () => {},
     serviceFactories,
     sqliteStoreFactory: () => sqliteStore,
+    identityManagerFactory: () => fakeIdentityManager(),
     healthMonitorFactory: () => ({ start() {}, close() {} }),
     proxyHealthMonitorFactory: (options) => {
       proxyHealthOptions = options;
