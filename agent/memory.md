@@ -82,3 +82,10 @@
 - 建立`v0.2.0` tag並完成CI run `31508260744`：六組Linux glibc native binding下載與發布、Node矩陣、9項E2E、Docker部署、Release及發布後驗收全部成功。
 - `v0.2.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.2.0`，包含`index.js`、`runtime.cjs`、`manifest.json`及ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`1fef46069609a73665f7f6ca91e5414b42dc593c673dab562d5a34a6889495c5`。
 - 發布後Ubuntu／Node20 runner在全新目錄只下載Release `index.js`，確認管理API HTTP 200、active版本0.2.0及`node-v115-linux-x64` binding；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache並再次提供管理API，兩次皆以SIGTERM優雅關閉。
+- 進入 v0.3.0 後，以 TDD 完成 SOA wire、Primary Zone／serial、權威 NXDOMAIN／NODATA、wildcard、delegation／glue，以及 ConfigStore schema 3 與記錄 UUID migration。
+- 完成 BIND Zone file安全解析、穩定匯出、merge／replace preview、原子批次CRUD與Zone管理UI；匯入內容變更會使既有preview失效。
+- 完成 DNS Policy本地規則與HTTPS Hosts訂閱：priority穩定排序、名稱／qtype／CIDR／時區條件、合成回應、last-known-good快取與非阻塞更新。
+- 完成代理 smooth weighted RR、active health、passive breaker、fallback安全、maintenance、site／upstream drain、SQLite 30天健康歷史與管理API／操作台。
+- 完成 pooled HTTP/2與auto HTTP/1.1 fallback、Shadow traffic、WebSocket連線上限／idle／統計／abort；被動breaker只在狀態transition時寫入`proxy-health`，避免穩態噪音。
+- 擴充五步代理精靈，可編輯maintenance、WebSocket限制、結構化主備上游、weight、protocol、健康檢查、unsafe fallback與Shadow設定。
+- v0.3.0發布前回歸：Node單元／整合179/179、Playwright12/12、ESLint、npm audit 0、37個src JS LSP均通過；本機build runtime SHA-256為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`，Release尚待建立。
