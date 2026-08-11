@@ -78,6 +78,7 @@ test("DoH listener supports RFC 8484 GET and POST and rejects invalid requests",
   });
   assert.equal(getResponse.status, 200);
   assert.equal(getResponse.headers.get("content-type"), "application/dns-message");
+  assert.equal(getResponse.headers.get("access-control-allow-origin"), "*");
   assert.equal(parseMessage(Buffer.from(await getResponse.arrayBuffer())).answers[0].address, "192.0.2.80");
 
   const postResponse = await fetch(base, {
@@ -86,9 +87,40 @@ test("DoH listener supports RFC 8484 GET and POST and rejects invalid requests",
     body: query,
   });
   assert.equal(postResponse.status, 200);
+  assert.equal(postResponse.headers.get("access-control-allow-origin"), "*");
   assert.equal(parseMessage(Buffer.from(await postResponse.arrayBuffer())).answers[0].address, "192.0.2.80");
 
-  assert.equal((await fetch(base, { method: "PUT" })).status, 405);
-  assert.equal((await fetch(base, { method: "POST", body: query })).status, 415);
-  assert.equal((await fetch("http://127.0.0.1:" + service.address().port + "/missing")).status, 404);
+  const preflight = await fetch(base, {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://diagnostic.example",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "Content-Type, Accept",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+  assert.match(preflight.headers.get("access-control-allow-methods"), /GET/);
+  assert.match(preflight.headers.get("access-control-allow-methods"), /POST/);
+  assert.match(preflight.headers.get("access-control-allow-methods"), /OPTIONS/);
+  assert.match(preflight.headers.get("access-control-allow-headers"), /Content-Type/i);
+  assert.match(preflight.headers.get("access-control-allow-headers"), /Accept/i);
+
+  const malformed = await fetch(`${base}?dns=not-valid-wire`);
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.headers.get("access-control-allow-origin"), "*");
+
+  const unsupportedMethod = await fetch(base, { method: "PUT" });
+  assert.equal(unsupportedMethod.status, 405);
+  assert.equal(unsupportedMethod.headers.get("access-control-allow-origin"), "*");
+
+  const unsupportedMedia = await fetch(base, { method: "POST", body: query });
+  assert.equal(unsupportedMedia.status, 415);
+  assert.equal(unsupportedMedia.headers.get("access-control-allow-origin"), "*");
+
+  const missing = await fetch("http://127.0.0.1:" + service.address().port + "/missing", {
+    headers: { Origin: "https://diagnostic.example" },
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("access-control-allow-origin"), null);
 });

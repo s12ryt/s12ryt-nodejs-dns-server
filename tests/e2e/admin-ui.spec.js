@@ -1,11 +1,13 @@
 "use strict";
 
 const fs = require("node:fs/promises");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
 const { test, expect } = require("@playwright/test");
 const { ConfigStore } = require("../../src/admin/config-store");
+const { createQuery, parseMessage } = require("../../src/dns/message");
 const { createRuntime } = require("../../src/runtime");
 
 const password = "correct horse battery";
@@ -13,6 +15,8 @@ let baseUrl;
 let directory;
 let runtime;
 let setupToken;
+let browserOrigin;
+let browserOriginServer;
 
 test.beforeAll(async () => {
   directory = await fs.mkdtemp(path.join(os.tmpdir(), "s12-ui-"));
@@ -24,11 +28,13 @@ test.beforeAll(async () => {
   current.domains = [
     { name: "example.test", enabled: true, defaultTtl: 300, note: "父網域" },
     { name: "child.example.test", enabled: true, defaultTtl: 300, note: "子網域" },
+    { name: "16516565.tw", enabled: true, defaultTtl: 300, note: "DoH CORS 驗收" },
   ];
   current.records = [
     { name: "root.example.test", type: "A", value: "192.0.2.10", ttl: 300, enabled: true },
     { name: "api.child.example.test", type: "A", value: "192.0.2.20", ttl: 300, enabled: true },
     { name: "outside.test", type: "A", value: "192.0.2.30", ttl: 300, enabled: true },
+    { name: "awa.16516565.tw", type: "CNAME", value: "chatgpt.com", ttl: 300, enabled: true },
   ];
   current.tunnel = { token: "initial-ui-token" };
   await config.update(current);
@@ -64,9 +70,16 @@ test.beforeAll(async () => {
   });
   await runtime.start();
   baseUrl = `http://127.0.0.1:${runtime.status().services.admin.port}`;
+  browserOriginServer = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><title>DoH cross-origin test</title>");
+  });
+  await new Promise((resolve) => browserOriginServer.listen(0, "127.0.0.1", resolve));
+  browserOrigin = `http://127.0.0.1:${browserOriginServer.address().port}`;
 });
 
 test.afterAll(async () => {
+  await new Promise((resolve) => browserOriginServer?.close(resolve));
   await runtime?.close();
   await fs.rm(directory, { recursive: true, force: true });
 });
@@ -93,6 +106,34 @@ test.describe.serial("管理介面", () => {
 
     await expect(page.getByText("Cloudflare", { exact: true })).toBeVisible();
     await expect(page.getByText("Google", { exact: true })).toBeVisible();
+  });
+
+  test("瀏覽器可從其他來源讀取 DoH CNAME 回應", async ({ page }) => {
+    const query = createQuery("awa.16516565.tw", "CNAME", { id: 915 });
+    const dohUrl = `http://127.0.0.1:${runtime.status().services.doh.port}/dns-query`;
+    await page.goto(browserOrigin);
+
+    const result = await page.evaluate(async ({ url, wire }) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/dns-message",
+          "Content-Type": "application/dns-message",
+        },
+        body: new Uint8Array(wire),
+      });
+      return {
+        status: response.status,
+        responseType: response.type,
+        body: Array.from(new Uint8Array(await response.arrayBuffer())),
+      };
+    }, { url: dohUrl, wire: Array.from(query) });
+
+    expect(result.status).toBe(200);
+    expect(result.responseType).toBe("cors");
+    const message = parseMessage(Buffer.from(result.body));
+    expect(message.flags.rcode).toBe(0);
+    expect(message.answers[0].value).toBe("chatgpt.com");
   });
 
   test("DNS 與網域工作區提供完整 CRUD、自建 modal 與診斷", async ({ page }) => {

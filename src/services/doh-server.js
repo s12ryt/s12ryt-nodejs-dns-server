@@ -6,6 +6,14 @@ const { minimumAnswerTtl } = require("../dns/message");
 const { mediaType } = require("../dns/upstream-doh");
 
 const MAX_DOH_BODY = 65535;
+const DOH_ALLOW_METHODS = "GET, POST, OPTIONS";
+const DOH_ALLOW_HEADERS = "Content-Type, Accept";
+
+function setDohCorsHeaders(response) {
+  response.setHeader("access-control-allow-origin", "*");
+  response.setHeader("access-control-allow-methods", DOH_ALLOW_METHODS);
+  response.setHeader("access-control-allow-headers", DOH_ALLOW_HEADERS);
+}
 
 function readBody(request) {
   return new Promise((resolve, reject) => {
@@ -38,6 +46,11 @@ function createDohService({ resolver, host = "0.0.0.0", port = 8053 } = {}) {
           response.writeHead(404).end();
           return;
         }
+        setDohCorsHeaders(response);
+        if (request.method === "OPTIONS") {
+          response.writeHead(204).end();
+          return;
+        }
 
         try {
           let wire;
@@ -55,7 +68,7 @@ function createDohService({ resolver, host = "0.0.0.0", port = 8053 } = {}) {
             }
             wire = await readBody(request);
           } else {
-            response.setHeader("allow", "GET, POST");
+            response.setHeader("allow", DOH_ALLOW_METHODS);
             response.writeHead(405).end();
             return;
           }
@@ -87,4 +100,11 @@ function createDohService({ resolver, host = "0.0.0.0", port = 8053 } = {}) {
   };
 }
 
-module.exports = { MAX_DOH_BODY, createDohService, readBody };
+module.exports = {
+  DOH_ALLOW_HEADERS,
+  DOH_ALLOW_METHODS,
+  MAX_DOH_BODY,
+  createDohService,
+  readBody,
+  setDohCorsHeaders,
+};
