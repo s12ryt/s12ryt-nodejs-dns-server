@@ -3,7 +3,19 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { percentile, runOperationBatch, runSoakLoad } = require("../../src/benchmark/load");
+const { LatencyHistogram, percentile, runOperationBatch, runSoakLoad } = require("../../src/benchmark/load");
+
+test("latency histogram keeps bounded memory across formal soak sample volumes", () => {
+  const histogram = new LatencyHistogram();
+  for (let index = 0; index < 10_000_000; index += 1) {
+    histogram.observe(index % 100);
+  }
+
+  assert.equal(histogram.count, 10_000_000);
+  assert.equal(histogram.bucketCount, 60_002);
+  assert.equal(histogram.percentile(0.95), 94);
+  assert.equal(histogram.percentile(1), 99);
+});
 
 test("operation batch bounds concurrency and reports errors latency and throughput", async () => {
   let active = 0;
@@ -27,6 +39,20 @@ test("operation batch bounds concurrency and reports errors latency and throughp
   assert.equal(result.p95Ms >= 0, true);
   assert.equal(result.latencies.length, 20);
   assert.equal(percentile([1, 2, 3, 4, 5], 0.95), 5);
+});
+
+test("operation batch paces starts across an interval instead of creating a transport burst", async () => {
+  const starts = [];
+  const result = await runOperationBatch({
+    count: 5,
+    concurrency: 5,
+    spreadMs: 100,
+    operation: async () => starts.push(performance.now()),
+  });
+
+  assert.equal(Math.max(...starts) - Math.min(...starts) >= 60, true);
+  assert.equal(result.requests, 5);
+  assert.equal(result.errors, 0);
 });
 
 test("soak load runs DNS and proxy together and records health interruptions", async () => {
