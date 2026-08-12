@@ -3,7 +3,11 @@
 const { BENCHMARK_PROFILES, evaluateBenchmarkReport, normalizeBenchmarkReport } = require("./profile");
 const { runTransportBenchmark } = require("./runner");
 
-const LOAD_HEADROOM = 1.05;
+const LOAD_HEADROOM_PERCENT = 110;
+
+function loadWithHeadroom(target) {
+  return Math.ceil(target * LOAD_HEADROOM_PERCENT / 100);
+}
 
 function benchmarkOptions(profileName, overrides = {}) {
   const profile = BENCHMARK_PROFILES[profileName];
@@ -17,8 +21,8 @@ function benchmarkOptions(profileName, overrides = {}) {
     proxySites: profile.proxySites,
     durationMs,
     intervalMs: 1000,
-    dnsOperationsPerInterval: Math.ceil(profile.dnsQps * LOAD_HEADROOM),
-    proxyOperationsPerInterval: Math.ceil(profile.proxyRps * LOAD_HEADROOM),
+    dnsOperationsPerInterval: loadWithHeadroom(profile.dnsQps),
+    proxyOperationsPerInterval: loadWithHeadroom(profile.proxyRps),
     dnsConcurrency: 512,
     proxyConcurrency: 256,
     maintenanceEveryIntervals: 300,
@@ -34,4 +38,4 @@ async function executeBenchmark({ profileName, runner = runTransportBenchmark, o
   return { report, evaluation: evaluateBenchmarkReport(report) };
 }
 
-module.exports = { LOAD_HEADROOM, benchmarkOptions, executeBenchmark };
+module.exports = { LOAD_HEADROOM_PERCENT, benchmarkOptions, executeBenchmark, loadWithHeadroom };

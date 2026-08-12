@@ -12,15 +12,15 @@ test("benchmark command derives fixed CI and formal release workloads", () => {
     proxySites: 100,
     durationMs: 30000,
   });
-  assert.equal(ci.dnsOperationsPerInterval, 525);
-  assert.equal(ci.proxyOperationsPerInterval, 105);
+  assert.equal(ci.dnsOperationsPerInterval, 550);
+  assert.equal(ci.proxyOperationsPerInterval, 110);
 
   const release = benchmarkOptions("release");
   assert.equal(release.records, 100000);
   assert.equal(release.proxySites, 1000);
   assert.equal(release.durationMs, 86400000);
-  assert.equal(release.dnsOperationsPerInterval, 5250);
-  assert.equal(release.proxyOperationsPerInterval, 1050);
+  assert.equal(release.dnsOperationsPerInterval, 5500);
+  assert.equal(release.proxyOperationsPerInterval, 1100);
   assert.throws(() => benchmarkOptions("release", { durationMs: 1000 }), /cannot be shortened/i);
 });
 
