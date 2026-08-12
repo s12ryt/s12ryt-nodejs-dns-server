@@ -111,6 +111,6 @@
 - [x] 完成 startup／restore／shutdown crash marker、精確白名單temp recovery與去敏recovery report。
 - [x] 完成 owner-only去敏診斷ZIP、manifest逐檔SHA、管理API與瀏覽器下載流程。
 - [x] 完成 deterministic 100,000 records／1,000 sites資料集、真UDP DNS與HTTP proxy負載、CI／scale／release profiles、原子JSON報告與CI artifact閘門。
-- [x] 完成維運／API／部署／benchmark正式手冊；完成226項Node測試、14項E2E、lint、audit、50個src JS與bootstrap／scripts LSP及v1.0.0 build，runtime SHA-256為`d375e7e476346b27e3c1a71c9caa081f2b9fb61efba9d216d231490369c17b55`。
+- [x] 完成維運／API／部署／benchmark正式手冊；修復formal soak延遲樣本無界累積造成的V8 OOM與突發發送模型，完成227項Node測試、14項E2E、lint、audit、50個src JS與bootstrap／scripts LSP及v1.0.0 build，runtime SHA-256為`d375e7e476346b27e3c1a71c9caa081f2b9fb61efba9d216d231490369c17b55`。
 - [ ] 在Linux glibc x64執行100,000 records、1,000 sites、DNS 5,000 QPS、proxy 1,000 RPS與24小時不中斷formal soak，並保存`formal:true`報告。
 - [ ] 發布並驗證v1.0.0 Release、Linux CI、六個native assets、單檔冷啟動及last-known-good rollback。

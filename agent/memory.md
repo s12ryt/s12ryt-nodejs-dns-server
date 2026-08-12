@@ -93,6 +93,8 @@
 - 建立`v0.3.0` tag指向`b341f029edaf331aacbb2a6003121349b233df05`；tag CI run `31526833987`的Node矩陣、E2E、Docker部署、六組Linux native binding、Release及發布後驗收全部成功。
 - `v0.3.0` Release位於`https://github.com/s12ryt/s12ryt-nodejs-dns-server/releases/tag/v0.3.0`，包含index、runtime、manifest與ABI115／127／137 × x64／arm64六個binding；runtime asset digest為`42840d0c438d9aaac07a04818c24e22513e438345113e2b81ea813564019df9f`。
 - 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
+- v1.0.0 第一次正式 Linux soak 於 2026-08-12 06:45:39 從候選 `b1040775582caa954741240de2b92be27dfe197c` 啟動，在約11小時25分時因負載工具永久累積每筆latency，V8 heap達上限而OOM；沒有生成原子報告，該次驗收判定失敗且不與後續執行拼接。
+- 以TDD新增固定60,002 buckets的1ms latency直方圖，100,000,000筆樣本heap增量僅4,280 bytes；每秒DNS／proxy操作改為區間內平滑發送，headroom由5%調整為精確10%且不降低評估門檻。Linux glibc x64 scale前置閘門達DNS 5,073.79 QPS、proxy 1,014.76 RPS、DNS錯誤率0.0455%、proxy錯誤0、核心中斷0、維運1次／失敗0，允許從新候選SHA重新執行完整24小時formal soak。
 - 進入v1.0.0後，以TDD完成候選runtime pending／promotion交易、digest不可變檔名、去敏failed metadata及previous last-known-good回退；active只有候選完整啟動後才更新。
 - 完成跨版本備份預檢：config schema、SQLite quick_check／application id／schema一致性均在maintenance前驗證，future／corrupt／digest mismatch不會修改運行資料。
 - 完成RecoveryManager的startup／restore／shutdown owner-only marker及精確temp recovery；完成owner-only診斷ZIP，遞迴去敏並排除SQLite、完整備份、Tunnel／Webhook／session／token secrets。
