@@ -182,7 +182,8 @@ async function runSoakLoad({
     batches.push(runTick(tick));
     tick += 1;
   }
-  await Promise.all(batches);
+  const remainingWindow = Math.max(0, startedAt + durationMs - clock.now());
+  await Promise.all([Promise.all(batches), wait(remainingWindow)]);
   const elapsed = Math.max(0, clock.now() - startedAt);
   return {
     dns: summarizeSoak(dns, elapsed),

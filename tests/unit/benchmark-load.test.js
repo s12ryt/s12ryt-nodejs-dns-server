@@ -99,3 +99,24 @@ test("soak load starts every wall-clock interval while slow batches finish", asy
   assert.equal(result.dns.requests, 4);
   assert.equal(result.proxy.requests, 4);
 });
+
+test("soak load covers the full wall-clock window when batches finish early", async () => {
+  let now = 0;
+  const result = await runSoakLoad({
+    durationMs: 40,
+    intervalMs: 20,
+    dnsRate: 1,
+    proxyRate: 1,
+    dnsConcurrency: 1,
+    proxyConcurrency: 1,
+    dnsOperation: async () => {},
+    proxyOperation: async () => {},
+    clock: { now: () => now },
+    wait: async (milliseconds) => {
+      now += milliseconds;
+    },
+  });
+
+  assert.equal(result.soak.ticks, 2);
+  assert.equal(result.soak.durationMs, 40);
+});
