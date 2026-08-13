@@ -2,6 +2,14 @@
 
 更新日期：2026-08-10
 
+## 2026-08-13：formal benchmark 固定牆鐘排程
+
+- Linux glibc x64 候選 `ca4392b70ad86da07a76d582e639173e7ac09525` 已完整執行 24 小時 formal soak，但只完成 66,525 個一秒區間；DNS 與 proxy 吞吐均為目標約 84.7%，因此 `passed:false`，不得發布或與其他執行拼接。
+- 根因是負載工具等待每一區間所有請求（包含少數 timeout）完成後才啟動下一區間，使慢請求拖掉後續固定發送區間，而非核心服務中斷或維運失敗。
+- 已確認 formal benchmark 採固定牆鐘排程：每秒準時啟動新區間，允許前一區間的慢請求尾端短暫重疊；24 小時發送窗口結束後，必須等待所有已啟動請求與健康／維運檢查收尾。
+- 固定資料量、DNS 5,000 QPS、proxy 1,000 RPS、24 小時、錯誤率、核心中斷與維運門檻均不變；修復後須從新候選 SHA 完整重跑，不得沿用失敗報告。
+- Linux scale 前置驗證確認 `dnsConcurrency: 512` 在 5,500 QPS 會產生 client-side timeout；1／4／8 socket 的 10 秒診斷矩陣在 concurrency 512 都有錯誤，在 concurrency 128 都完成 55,000 次查詢且 0 error。formal benchmark 固定使用 8 個 UDP client socket 輪詢分片與總 concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。總 QPS、2 秒 timeout、DNS 錯誤率上限 0.1% 與服務端行為均不得降低或忽略。
+
 ## 產品目標
 
 - 從零建立可自架的 Node.js DNS 服務，產品名稱暫以 `S12 DNS Server` 顯示。
