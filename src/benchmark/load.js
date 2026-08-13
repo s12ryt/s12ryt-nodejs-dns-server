@@ -122,6 +122,12 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function waitUntil(deadline, clock, wait) {
+  while (clock.now() < deadline) {
+    await wait(deadline - clock.now());
+  }
+}
+
 async function runSoakLoad({
   durationMs,
   intervalMs = 1000,
@@ -177,13 +183,14 @@ async function runSoakLoad({
   };
   while (tick * intervalMs < durationMs) {
     const scheduledAt = startedAt + tick * intervalMs;
-    const remaining = scheduledAt - clock.now();
-    if (remaining > 0) await wait(remaining);
+    await waitUntil(scheduledAt, clock, wait);
     batches.push(runTick(tick));
     tick += 1;
   }
-  const remainingWindow = Math.max(0, startedAt + durationMs - clock.now());
-  await Promise.all([Promise.all(batches), wait(remainingWindow)]);
+  await Promise.all([
+    Promise.all(batches),
+    waitUntil(startedAt + durationMs, clock, wait),
+  ]);
   const elapsed = Math.max(0, clock.now() - startedAt);
   return {
     dns: summarizeSoak(dns, elapsed),
