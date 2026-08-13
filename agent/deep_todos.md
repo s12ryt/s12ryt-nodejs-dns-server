@@ -114,5 +114,6 @@
 - [x] 完成維運／API／部署／benchmark正式手冊；修復formal soak延遲樣本無界累積造成的V8 OOM與突發發送模型，完成227項Node測試、14項E2E、lint、audit、50個src JS與bootstrap／scripts LSP及v1.0.0 build，runtime SHA-256為`d375e7e476346b27e3c1a71c9caa081f2b9fb61efba9d216d231490369c17b55`。
 - [x] 判定候選`ca4392b`完整24小時formal soak因序列區間只啟動66,525 ticks而失敗；依TDD改為固定牆鐘排程，並以8個UDP client sockets與總concurrency 128通過Linux scale前置閘門（DNS 5,500.00 QPS／0 error、proxy 1,100.00 RPS／0 error）。
 - [x] 判定候選`449e69f`的CI因快速批次提早2ms結束而違反完整窗口契約；以決定性RED測試重現20ms／40ms，再同時等待完整窗口與全部已啟動批次；Linux scale重驗30,000ms、DNS 5,499.91 QPS／0 error、proxy 1,099.98 RPS／0 error並通過。
+- [x] 判定候選`cd23e4e`的CI因作業系統timer再次提早2ms喚醒而失敗；以RED模擬early wake後，讓每個tick與最終窗口反覆等待monotonic deadline。完整回歸Node 231／231、E2E 14／14、lint、audit 0、build通過，Linux scale運行30,002ms且DNS 5,499.71 QPS／0 error、proxy 1,099.94 RPS／0 error。
 - [ ] 在Linux glibc x64執行100,000 records、1,000 sites、DNS 5,000 QPS、proxy 1,000 RPS與24小時不中斷formal soak，並保存`formal:true`報告。
 - [ ] 發布並驗證v1.0.0 Release、Linux CI、六個native assets、單檔冷啟動及last-known-good rollback。
