@@ -55,3 +55,7 @@ release duration由程式固定，不能用環境變數縮短後仍標示formal�
 第一次v1候選formal soak在Linux運行約11小時25分後，因負載工具把每筆延遲永久保存在陣列而觸發V8 heap OOM。該次執行沒有原子報告，已明確判定失敗且不得與後續結果拼接。修復以固定60,002個bucket的直方圖取代無界陣列，100,000,000筆合成樣本的heap增量驗證為4,280 bytes；同時將每秒請求平滑發送，避免UDP突發丟包。修復後Linux scale profile達DNS 5,073.79 QPS、proxy 1,014.76 RPS、DNS錯誤率0.0455%、核心中斷0，通過重新啟動24小時formal soak的前置閘門。
 
 第二次候選`ca4392b70ad86da07a76d582e639173e7ac09525`完整運行24小時並產生原子報告，但序列等待每一秒區間收尾，僅啟動66,525個區間，造成DNS 4,234.78 QPS、proxy 846.96 RPS且DNS錯誤率0.221389%，因此`passed:false`且不得發布。固定牆鐘排程修復後，以1／4／8 socket和concurrency 128／512的Linux診斷矩陣確認高錯誤來自client concurrency 512；固定8 socket與總concurrency 128的30秒scale前置閘門完成DNS 165,000次、0 error、5,500.00 QPS、p95 25ms，以及proxy 33,000次、0 error、1,100.00 RPS、p95 18ms，核心中斷與維運失敗均為0。
+
+候選`449e69f00225094a25f63935037385a84cf61cf8`的CI完整送出30秒負載，但快速批次在窗口端點前2ms收尾，使報告duration為29,998ms並正確被門檻拒絕。負載排程現會同時等待完整牆鐘窗口與所有已啟動批次，報告時間取較晚者；未放寬30秒或24小時門檻。
+
+完整窗口修復後的Linux glibc x64 scale前置閘門精確運行30,000ms：DNS完成165,000次、0 error、5,499.91 QPS、p95 27ms；proxy完成33,000次、0 error、1,099.98 RPS、p95 22ms；核心中斷0、維運1次／失敗0，`evaluation.passed:true`。
