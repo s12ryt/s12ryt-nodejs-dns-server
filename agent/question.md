@@ -9,6 +9,7 @@
 - 已確認 formal benchmark 採固定牆鐘排程：每秒準時啟動新區間，允許前一區間的慢請求尾端短暫重疊；24 小時發送窗口結束後，必須等待所有已啟動請求與健康／維運檢查收尾。
 - 固定資料量、DNS 5,000 QPS、proxy 1,000 RPS、24 小時、錯誤率、核心中斷與維運門檻均不變；修復後須從新候選 SHA 完整重跑，不得沿用失敗報告。
 - Linux scale 前置驗證確認 `dnsConcurrency: 512` 在 5,500 QPS 會產生 client-side timeout；1／4／8 socket 的 10 秒診斷矩陣在 concurrency 512 都有錯誤，在 concurrency 128 都完成 55,000 次查詢且 0 error。formal benchmark 固定使用 8 個 UDP client socket 輪詢分片與總 concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。總 QPS、2 秒 timeout、DNS 錯誤率上限 0.1% 與服務端行為均不得降低或忽略。
+- 候選 `449e69f00225094a25f63935037385a84cf61cf8` 的 CI 證明固定 tick 已完整發送，但快速收尾時報告可能在 30 秒窗口前 2ms 結束，違反既有 duration 契約。已確認採「完整窗口並等待批次」：最後一個 tick 啟動後仍須等到 `startedAt + durationMs`，並同時等待所有已啟動批次；最終報告時間取兩者較晚，不放寬 duration 門檻。
 
 ## 產品目標
 
