@@ -58,4 +58,6 @@ release duration由程式固定，不能用環境變數縮短後仍標示formal�
 
 候選`449e69f00225094a25f63935037385a84cf61cf8`的CI完整送出30秒負載，但快速批次在窗口端點前2ms收尾，使報告duration為29,998ms並正確被門檻拒絕。負載排程現會同時等待完整牆鐘窗口與所有已啟動批次，報告時間取較晚者；未放寬30秒或24小時門檻。
 
+候選`cd23e4e6c002201e494c875d317f891d623ada61`的CI再次以29,998ms結束，定位為作業系統timer可在deadline前提早喚醒。排程現在以monotonic clock反覆等待每個tick與最終窗口deadline；決定性測試模擬每次提早2ms喚醒，確認tick不提前且窗口不縮短。Linux glibc x64 scale重驗運行30,002ms，DNS 165,000次、0 error、5,499.71 QPS，proxy 33,000次、0 error、1,099.94 RPS，核心中斷0、維運1次／失敗0，evaluation通過。
+
 完整窗口修復後的Linux glibc x64 scale前置閘門精確運行30,000ms：DNS完成165,000次、0 error、5,499.91 QPS、p95 27ms；proxy完成33,000次、0 error、1,099.98 RPS、p95 22ms；核心中斷0、維運1次／失敗0，`evaluation.passed:true`。
