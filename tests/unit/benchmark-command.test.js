@@ -21,6 +21,8 @@ test("benchmark command derives fixed CI and formal release workloads", () => {
   assert.equal(release.durationMs, 86400000);
   assert.equal(release.dnsOperationsPerInterval, 5500);
   assert.equal(release.proxyOperationsPerInterval, 1100);
+  assert.equal(release.dnsClientSockets, 8);
+  assert.equal(release.dnsConcurrency, 128);
   assert.throws(() => benchmarkOptions("release", { durationMs: 1000 }), /cannot be shortened/i);
 });
 
