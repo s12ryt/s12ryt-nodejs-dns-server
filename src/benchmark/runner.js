@@ -94,6 +94,24 @@ function createDnsBenchmarkClient({ host, port, timeoutMs = 2000 }) {
   };
 }
 
+function createDnsBenchmarkClientPool({ host, port, size, timeoutMs = 2000, createClient = createDnsBenchmarkClient }) {
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error("DNS benchmark client socket count must be a positive integer");
+  const clients = Array.from({ length: size }, () => createClient({ host, port, timeoutMs }));
+  let nextClient = 0;
+  return {
+    async start() {
+      await Promise.all(clients.map((client) => client.start()));
+    },
+    query(recordCount) {
+      const client = clients[nextClient++ % clients.length];
+      return client.query(recordCount);
+    },
+    async close() {
+      await Promise.all(clients.map((client) => client.close()));
+    },
+  };
+}
+
 function proxyRequest({ agent, port, site }) {
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -131,6 +149,7 @@ async function runTransportBenchmark({
   intervalMs = 1000,
   dnsOperationsPerInterval,
   proxyOperationsPerInterval,
+  dnsClientSockets = 8,
   dnsConcurrency = 512,
   proxyConcurrency = 256,
   maintenanceEveryIntervals = 300,
@@ -164,7 +183,11 @@ async function runTransportBenchmark({
     await proxyService.start();
     const dnsAddress = dnsService.address().udp;
     const proxyAddress = proxyService.address();
-    dnsClient = createDnsBenchmarkClient({ host: "127.0.0.1", port: dnsAddress.port });
+    dnsClient = createDnsBenchmarkClientPool({
+      host: "127.0.0.1",
+      port: dnsAddress.port,
+      size: dnsClientSockets,
+    });
     await dnsClient.start();
     let proxySequence = 0;
     const result = await runSoakLoad({
@@ -214,4 +237,4 @@ async function runTransportBenchmark({
   }
 }
 
-module.exports = { createDnsBenchmarkClient, environment, runTransportBenchmark };
+module.exports = { createDnsBenchmarkClient, createDnsBenchmarkClientPool, environment, runTransportBenchmark };

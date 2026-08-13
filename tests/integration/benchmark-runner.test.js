@@ -3,7 +3,35 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { runTransportBenchmark } = require("../../src/benchmark/runner");
+const { createDnsBenchmarkClientPool, runTransportBenchmark } = require("../../src/benchmark/runner");
+
+test("DNS benchmark client pool starts, rotates, and closes every socket", async () => {
+  const events = [];
+  let created = 0;
+  const pool = createDnsBenchmarkClientPool({
+    host: "127.0.0.1",
+    port: 5354,
+    size: 3,
+    createClient: () => {
+      const id = created++;
+      return {
+        start: async () => events.push(`start:${id}`),
+        query: async (recordCount) => events.push(`query:${id}:${recordCount}`),
+        close: async () => events.push(`close:${id}`),
+      };
+    },
+  });
+
+  await pool.start();
+  await Promise.all([pool.query(10), pool.query(10), pool.query(10), pool.query(10)]);
+  await pool.close();
+
+  assert.deepEqual(events, [
+    "start:0", "start:1", "start:2",
+    "query:0:10", "query:1:10", "query:2:10", "query:0:10",
+    "close:0", "close:1", "close:2",
+  ]);
+});
 
 test("benchmark runner drives real UDP DNS and HTTP proxy transports together", async () => {
   const report = await runTransportBenchmark({
