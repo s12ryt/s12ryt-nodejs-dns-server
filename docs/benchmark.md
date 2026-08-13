@@ -42,7 +42,7 @@ npm run benchmark:scale
 npm run benchmark:release
 ```
 
-release duration由程式固定，不能用環境變數縮短後仍標示formal。命令將請求均勻分散於每個一秒區間，並以10%發送headroom補償timer與收尾誤差；延遲採固定大小的1ms直方圖計算p95，記憶體不會隨24小時請求數成長。輸出使用owner-mode原子JSON寫入`benchmark-results`。
+release duration由程式固定，不能用環境變數縮短後仍標示formal。命令依固定牆鐘每秒啟動負載區間，將請求均勻分散於區間內，並以10%發送headroom補償timer與收尾誤差；前一區間的慢尾端可短暫重疊，發送窗口結束後才等待全部已啟動工作收尾。DNS負載使用8個UDP client socket輪詢分片與總concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。延遲採固定大小的1ms直方圖計算p95，記憶體不會隨24小時請求數成長。輸出使用owner-mode原子JSON寫入`benchmark-results`。
 
 ## 報告判讀
 
@@ -53,3 +53,5 @@ release duration由程式固定，不能用環境變數縮短後仍標示formal�
 ## 失敗處理
 
 第一次v1候選formal soak在Linux運行約11小時25分後，因負載工具把每筆延遲永久保存在陣列而觸發V8 heap OOM。該次執行沒有原子報告，已明確判定失敗且不得與後續結果拼接。修復以固定60,002個bucket的直方圖取代無界陣列，100,000,000筆合成樣本的heap增量驗證為4,280 bytes；同時將每秒請求平滑發送，避免UDP突發丟包。修復後Linux scale profile達DNS 5,073.79 QPS、proxy 1,014.76 RPS、DNS錯誤率0.0455%、核心中斷0，通過重新啟動24小時formal soak的前置閘門。
+
+第二次候選`ca4392b70ad86da07a76d582e639173e7ac09525`完整運行24小時並產生原子報告，但序列等待每一秒區間收尾，僅啟動66,525個區間，造成DNS 4,234.78 QPS、proxy 846.96 RPS且DNS錯誤率0.221389%，因此`passed:false`且不得發布。固定牆鐘排程修復後，以1／4／8 socket和concurrency 128／512的Linux診斷矩陣確認高錯誤來自client concurrency 512；固定8 socket與總concurrency 128的30秒scale前置閘門完成DNS 165,000次、0 error、5,500.00 QPS、p95 25ms，以及proxy 33,000次、0 error、1,100.00 RPS、p95 18ms，核心中斷與維運失敗均為0。
