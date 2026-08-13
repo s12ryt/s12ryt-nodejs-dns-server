@@ -95,6 +95,7 @@
 - 發布後Ubuntu／Node20 runner只下載Release `index.js`即成功啟動完整runtime與管理API；停止後以不可達manifest重啟，成功使用已驗證last-known-good cache，兩次皆以SIGTERM優雅關閉。
 - 候選`ca4392b70ad86da07a76d582e639173e7ac09525`的第二次Linux formal soak完整運行86,400,561 ms並產生原子報告，但序列等待每個一秒負載區間收尾，只啟動66,525 ticks；DNS 4,234.78 QPS、proxy 846.96 RPS、DNS錯誤率0.221389%，判定`passed:false`且未發布。
 - 先以RED測試證明慢批次會使舊排程在80 ms窗口只啟動2／4 ticks，再改為固定牆鐘啟動且窗口後等待全部工作。Linux矩陣顯示DNS client concurrency 512在1／4／8 sockets均有timeout，concurrency 128均為55,000次／0 error；採已確認的8 sockets與總concurrency 128後，30秒scale完成DNS 165,000次／0 error／5,500.00 QPS／p95 25 ms，proxy 33,000次／0 error／1,100.00 RPS／p95 18 ms，核心中斷與維運失敗均為0。
+- 候選`449e69f00225094a25f63935037385a84cf61cf8`的GitHub CI run `31694957447`完整發送負載但以29,998 ms結束，正確被30,000 ms門檻拒絕。新增假時鐘RED穩定重現快速批次只回報20／40 ms；GREEN改為同時等待完整牆鐘窗口與全部批次，目標與鄰近benchmark測試10／10通過。Linux glibc x64 scale重驗精確運行30,000 ms，DNS 165,000次／0 error／5,499.91 QPS／p95 27 ms，proxy 33,000次／0 error／1,099.98 RPS／p95 22 ms，核心中斷0、維運1次／失敗0，evaluation通過。
 - v1.0.0 第一次正式 Linux soak 於 2026-08-12 06:45:39 從候選 `b1040775582caa954741240de2b92be27dfe197c` 啟動，在約11小時25分時因負載工具永久累積每筆latency，V8 heap達上限而OOM；沒有生成原子報告，該次驗收判定失敗且不與後續執行拼接。
 - 以TDD新增固定60,002 buckets的1ms latency直方圖，100,000,000筆樣本heap增量僅4,280 bytes；每秒DNS／proxy操作改為區間內平滑發送，headroom由5%調整為精確10%且不降低評估門檻。Linux glibc x64 scale前置閘門達DNS 5,073.79 QPS、proxy 1,014.76 RPS、DNS錯誤率0.0455%、proxy錯誤0、核心中斷0、維運1次／失敗0，允許從新候選SHA重新執行完整24小時formal soak。
 - 進入v1.0.0後，以TDD完成候選runtime pending／promotion交易、digest不可變檔名、去敏failed metadata及previous last-known-good回退；active只有候選完整啟動後才更新。
