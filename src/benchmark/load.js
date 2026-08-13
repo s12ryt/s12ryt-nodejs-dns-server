@@ -151,12 +151,12 @@ async function runSoakLoad({
   let operationalRuns = 0;
   let operationalFailures = 0;
   let tick = 0;
-  while (clock.now() - startedAt < durationMs) {
-    const tickStartedAt = startedAt + tick * intervalMs;
+  const batches = [];
+  const runTick = async (currentTick) => {
     const maintenance = async () => {
       if (!maintenanceOperation) return;
       try {
-        if ((await maintenanceOperation({ tick })) !== false) operationalRuns += 1;
+        if ((await maintenanceOperation({ tick: currentTick })) !== false) operationalRuns += 1;
       } catch {
         operationalRuns += 1;
         operationalFailures += 1;
@@ -174,10 +174,15 @@ async function runSoakLoad({
     } catch {
       coreInterruptions += 1;
     }
-    tick += 1;
-    const remaining = tickStartedAt + intervalMs - clock.now();
+  };
+  while (tick * intervalMs < durationMs) {
+    const scheduledAt = startedAt + tick * intervalMs;
+    const remaining = scheduledAt - clock.now();
     if (remaining > 0) await wait(remaining);
+    batches.push(runTick(tick));
+    tick += 1;
   }
+  await Promise.all(batches);
   const elapsed = Math.max(0, clock.now() - startedAt);
   return {
     dns: summarizeSoak(dns, elapsed),

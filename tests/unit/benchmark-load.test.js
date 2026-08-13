@@ -82,3 +82,20 @@ test("soak load runs DNS and proxy together and records health interruptions", a
   assert.equal(result.dns.p95Ms >= 0, true);
   assert.equal(result.proxy.p95Ms >= 0, true);
 });
+
+test("soak load starts every wall-clock interval while slow batches finish", async () => {
+  const result = await runSoakLoad({
+    durationMs: 80,
+    intervalMs: 20,
+    dnsRate: 1,
+    proxyRate: 1,
+    dnsConcurrency: 1,
+    proxyConcurrency: 1,
+    dnsOperation: async () => new Promise((resolve) => setTimeout(resolve, 35)),
+    proxyOperation: async () => new Promise((resolve) => setTimeout(resolve, 35)),
+  });
+
+  assert.equal(result.soak.ticks, 4);
+  assert.equal(result.dns.requests, 4);
+  assert.equal(result.proxy.requests, 4);
+});
