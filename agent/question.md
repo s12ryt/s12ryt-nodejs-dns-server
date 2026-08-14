@@ -11,6 +11,8 @@
 - Linux scale 前置驗證確認 `dnsConcurrency: 512` 在 5,500 QPS 會產生 client-side timeout；1／4／8 socket 的 10 秒診斷矩陣在 concurrency 512 都有錯誤，在 concurrency 128 都完成 55,000 次查詢且 0 error。formal benchmark 固定使用 8 個 UDP client socket 輪詢分片與總 concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。總 QPS、2 秒 timeout、DNS 錯誤率上限 0.1% 與服務端行為均不得降低或忽略。
 - 候選 `449e69f00225094a25f63935037385a84cf61cf8` 的 CI 證明固定 tick 已完整發送，但快速收尾時報告可能在 30 秒窗口前 2ms 結束，違反既有 duration 契約。已確認採「完整窗口並等待批次」：最後一個 tick 啟動後仍須等到 `startedAt + durationMs`，並同時等待所有已啟動批次；最終報告時間取兩者較晚，不放寬 duration 門檻。
 - 候選 `cd23e4e6c002201e494c875d317f891d623ada61` 的 CI 再次於 29,998ms 結束，證明單次 timer wait 可能提早喚醒。固定 tick 與完整窗口都必須以 monotonic clock 反覆等待至各自 deadline，不能假設一次 timer 已涵蓋完整剩餘時間，也不得以四捨五入或放寬門檻掩蓋。
+- 候選 `170e40eea239e77300a2445baba4b472626ab7ce` 的 Linux glibc x64 formal soak 從 `2026-08-13T11:47:01Z` 連續執行約 10 小時 20 分後，以 V8 heap OOM、exit 134 結束且未產生原子報告，因此判定失敗、不得發布或與其他執行拼接。主機當時仍有約 7 GiB 可用記憶體，根因是固定牆鐘排程將每個 tick Promise 永久保留到 24 小時窗口結束。
+- 已確認批次生命週期採「只保留未完成批次」：以 in-flight 集合追蹤 tick，Promise 無論成功或失敗 settled 後立即解除參照；發送窗口結束時只等待當下仍未完成的 tick。固定牆鐘、完整窗口、所有已啟動工作收尾、請求數、timeout 與驗收門檻均不變，不以限制 tick、降低負載或提高 heap 取代根因修復。
 
 ## 產品目標
 
