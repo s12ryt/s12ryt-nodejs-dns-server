@@ -42,7 +42,7 @@ npm run benchmark:scale
 npm run benchmark:release
 ```
 
-release duration由程式固定，不能用環境變數縮短後仍標示formal。命令依固定牆鐘每秒啟動負載區間，將請求均勻分散於區間內，並以10%發送headroom補償timer與收尾誤差；前一區間的慢尾端可短暫重疊，發送窗口結束後才等待全部已啟動工作收尾。DNS負載使用8個UDP client socket輪詢分片與總concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。延遲採固定大小的1ms直方圖計算p95，記憶體不會隨24小時請求數成長。輸出使用owner-mode原子JSON寫入`benchmark-results`。
+release duration由程式固定，不能用環境變數縮短後仍標示formal。命令依固定牆鐘每秒啟動負載區間，將請求均勻分散於區間內，並以10%發送headroom補償timer與收尾誤差；前一區間的慢尾端可短暫重疊，settled區間立即解除參照，發送窗口結束後只等待仍未完成的工作收尾。DNS負載使用8個UDP client socket輪詢分片與總concurrency 128，避免負載產生器自身的突發接收佇列成為瓶頸。延遲採固定大小的1ms直方圖計算p95，記憶體不會隨24小時請求數成長。輸出使用owner-mode原子JSON寫入`benchmark-results`。
 
 ## 報告判讀
 
@@ -61,3 +61,5 @@ release duration由程式固定，不能用環境變數縮短後仍標示formal�
 候選`cd23e4e6c002201e494c875d317f891d623ada61`的CI再次以29,998ms結束，定位為作業系統timer可在deadline前提早喚醒。排程現在以monotonic clock反覆等待每個tick與最終窗口deadline；決定性測試模擬每次提早2ms喚醒，確認tick不提前且窗口不縮短。Linux glibc x64 scale重驗運行30,002ms，DNS 165,000次、0 error、5,499.71 QPS，proxy 33,000次、0 error、1,099.94 RPS，核心中斷0、維運1次／失敗0，evaluation通過。
 
 完整窗口修復後的Linux glibc x64 scale前置閘門精確運行30,000ms：DNS完成165,000次、0 error、5,499.91 QPS、p95 27ms；proxy完成33,000次、0 error、1,099.98 RPS、p95 22ms；核心中斷0、維運1次／失敗0，`evaluation.passed:true`。
+
+候選`170e40eea239e77300a2445baba4b472626ab7ce`的formal soak從`2026-08-13T11:47:01Z`連續運行約10小時20分後，V8 heap達約2GiB並以exit 134 OOM結束；主機仍有約7GiB可用記憶體，且沒有原子報告，因此該次執行判定失敗。根因是固定牆鐘排程把每個已settled tick Promise保留在陣列直到24小時末，其閉包持續保留每區間6,600筆latency暫存陣列。修復改以in-flight集合只保留未完成tick，成功或失敗settled後立即移除，窗口末仍完整等待所有在途工作且不改變負載。1,000,000個settled Promise測試後集合為0，強制GC heap增量為7,504 bytes；Linux glibc x64 scale重驗運行30,002ms，DNS 165,000次／0 error／5,499.61 QPS，proxy 33,000次／0 error／1,099.92 RPS，核心中斷0、維運1次／失敗0。
