@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { LatencyHistogram, percentile, runOperationBatch, runSoakLoad } = require("../../src/benchmark/load");
+const { InFlightBatches, LatencyHistogram, percentile, runOperationBatch, runSoakLoad } = require("../../src/benchmark/load");
 
 test("latency histogram keeps bounded memory across formal soak sample volumes", () => {
   const histogram = new LatencyHistogram();
@@ -15,6 +15,29 @@ test("latency histogram keeps bounded memory across formal soak sample volumes",
   assert.equal(histogram.bucketCount, 60_002);
   assert.equal(histogram.percentile(0.95), 94);
   assert.equal(histogram.percentile(1), 99);
+});
+
+test("in-flight batch tracking releases every settled promise", async () => {
+  const batches = new InFlightBatches();
+  let resolveFirst;
+  let rejectSecond;
+  const first = new Promise((resolve) => { resolveFirst = resolve; });
+  const second = new Promise((_resolve, reject) => { rejectSecond = reject; });
+
+  batches.add(first);
+  batches.add(second);
+  assert.equal(batches.size, 2);
+
+  resolveFirst();
+  await first;
+  await Promise.resolve();
+  assert.equal(batches.size, 1);
+
+  rejectSecond(new Error("expected batch failure"));
+  await assert.rejects(second, /expected batch failure/);
+  await Promise.resolve();
+  assert.equal(batches.size, 0);
+  await assert.rejects(batches.drain(), /expected batch failure/);
 });
 
 test("operation batch bounds concurrency and reports errors latency and throughput", async () => {

@@ -61,6 +61,33 @@ class LatencyHistogram {
   }
 }
 
+class InFlightBatches {
+  #pending = new Set();
+  #failure;
+
+  get size() {
+    return this.#pending.size;
+  }
+
+  add(batch) {
+    const promise = Promise.resolve(batch);
+    this.#pending.add(promise);
+    promise.then(
+      () => this.#pending.delete(promise),
+      (error) => {
+        this.#pending.delete(promise);
+        this.#failure ??= error;
+      },
+    );
+    return promise;
+  }
+
+  async drain() {
+    await Promise.all(Array.from(this.#pending, (promise) => promise.catch(() => {})));
+    if (this.#failure) throw this.#failure;
+  }
+}
+
 function summarize(requests, errors, latencies, durationMs) {
   return {
     requests,
@@ -157,7 +184,7 @@ async function runSoakLoad({
   let operationalRuns = 0;
   let operationalFailures = 0;
   let tick = 0;
-  const batches = [];
+  const batches = new InFlightBatches();
   const runTick = async (currentTick) => {
     const maintenance = async () => {
       if (!maintenanceOperation) return;
@@ -184,11 +211,11 @@ async function runSoakLoad({
   while (tick * intervalMs < durationMs) {
     const scheduledAt = startedAt + tick * intervalMs;
     await waitUntil(scheduledAt, clock, wait);
-    batches.push(runTick(tick));
+    batches.add(runTick(tick));
     tick += 1;
   }
   await Promise.all([
-    Promise.all(batches),
+    batches.drain(),
     waitUntil(startedAt + durationMs, clock, wait),
   ]);
   const elapsed = Math.max(0, clock.now() - startedAt);
@@ -199,4 +226,4 @@ async function runSoakLoad({
   };
 }
 
-module.exports = { LatencyHistogram, percentile, runOperationBatch, runSoakLoad };
+module.exports = { InFlightBatches, LatencyHistogram, percentile, runOperationBatch, runSoakLoad };
